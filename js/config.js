@@ -14,7 +14,7 @@ const DEFAULT_CONFIG = {
   deeplRelayUrl: '', // 純靜態部署時，DeepL 需經由此中繼 URL（見 cloudflare-worker/）
   providerOrder: ['azure', 'google', 'deepl'],
   useProxy: HAS_BACKEND,
-  proxyBaseUrl: 'http://localhost:8787',
+  proxyBaseUrl: HAS_BACKEND ? `http://${location.hostname}:8787` : 'http://localhost:8787',
   ttsEngine: HAS_BACKEND ? 'edge' : 'webspeech', // 'webspeech' | 'edge' | 'piper' | 'kokoro'
   langA: 'zh-TW',
   langB: 'en',

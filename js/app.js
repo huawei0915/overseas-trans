@@ -58,14 +58,24 @@
       setSpeakerStatus('');
       return false;
     }
-    try {
-      await identifier.health();
-      setSpeakerStatus('聲紋服務就緒');
-      return true;
-    } catch (err) {
-      setSpeakerStatus(`聲紋服務無法使用（${err.message}），已改用語言偵測`, true);
-      return false;
+    // 後端剛啟動或網路瞬斷時第一次請求可能失敗，重試一次再判定不可用
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await identifier.health();
+        setSpeakerStatus('聲紋服務就緒');
+        return true;
+      } catch (err) {
+        if (attempt === 0) {
+          await new Promise((r) => setTimeout(r, 800));
+          continue;
+        }
+        const hint = err instanceof TypeError
+          ? '連不到後端 proxy，請確認已執行 npm run start:proxy 與 npm run start:diarize，且「後端 proxy 網址」正確'
+          : err.message;
+        setSpeakerStatus(`聲紋服務無法使用（${hint}），已改用語言偵測`, true);
+      }
     }
+    return false;
   }
 
   els.autoSpeaker.checked = !!cfg.autoSpeaker;
