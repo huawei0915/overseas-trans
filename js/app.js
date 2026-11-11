@@ -1,4 +1,4 @@
-// 主流程：STT → 靜音 5 秒 → 聲紋辨識甲/乙方（pyannote）→ 容錯翻譯 → TTS 播放 → 對話紀錄
+// 主流程：STT → 靜音 2 秒 → 聲紋辨識甲/乙方（pyannote）→ 容錯翻譯 → TTS 播放 → 對話紀錄
 (() => {
   const $ = (id) => document.getElementById(id);
 
@@ -262,7 +262,7 @@
     els.transcript.innerHTML = '';
     const p = document.createElement('p');
     p.className = 'transcript-empty';
-    p.textContent = '尚無對話。按下「開始對話」後即可持續說話，停頓 5 秒會自動翻譯並播放，直到按下「停止對話」為止。';
+    p.textContent = '尚無對話。按下「開始對話」後即可持續說話，停頓 2 秒會自動翻譯並播放，直到按下「停止對話」為止。';
     els.transcript.appendChild(p);
   }
 
