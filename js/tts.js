@@ -6,7 +6,7 @@
 const TTS_ENGINE_OPTIONS = [
   { id: 'webspeech', label: 'Web Speech API（瀏覽器內建）' },
   { id: 'edge', label: 'Microsoft Edge Read Aloud（推薦・需啟動 proxy）' },
-  { id: 'piperplus', label: 'Piper Plus（本機離線・日韓中英西法葡）' },
+  // { id: 'piperplus', label: 'Piper Plus（本機離線・日韓中英西法葡）' },
   { id: 'piper', label: 'Piper TTS（本機離線・中英西法德葡越）' },
   { id: 'kokoro', label: 'Kokoro TTS（本機離線・僅英文）' },
 ];
