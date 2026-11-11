@@ -1,6 +1,10 @@
 // 設定存取：所有設定存於 localStorage
 const CONFIG_STORAGE_KEY = 'overseas-trans-config';
 
+// 在 localhost / 區網（自架 proxy）執行時預設啟用後端功能；
+// 部署在 GitHub Pages 等純靜態環境時，預設改用瀏覽器直連 API 與不需後端的語音引擎。
+const HAS_BACKEND = /^(localhost|127\.0\.0\.1|\[::1\]|(10|192\.168)\.[\d.]+|172\.(1[6-9]|2\d|3[01])\.[\d.]+)$/.test(location.hostname);
+
 const DEFAULT_CONFIG = {
   azureKey: '',
   azureRegion: 'southeastasia',
@@ -8,12 +12,12 @@ const DEFAULT_CONFIG = {
   deeplKey: '',
   deeplPlan: 'free', // 'free' | 'pro'
   providerOrder: ['azure', 'google', 'deepl'],
-  useProxy: true,
+  useProxy: HAS_BACKEND,
   proxyBaseUrl: 'http://localhost:8787',
-  ttsEngine: 'edge', // 'webspeech' | 'edge' | 'piper' | 'kokoro'
+  ttsEngine: HAS_BACKEND ? 'edge' : 'webspeech', // 'webspeech' | 'edge' | 'piper' | 'kokoro'
   langA: 'zh-TW',
   langB: 'en',
-  autoSpeaker: true, // 以 pyannote.audio 聲紋自動分辨甲/乙方
+  autoSpeaker: HAS_BACKEND, // 以 pyannote.audio 聲紋自動分辨甲/乙方
 };
 
 const AppConfig = {

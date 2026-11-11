@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>雙向即時語音翻譯</title>
   <link rel="stylesheet" href="css/style.css" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <meta name="theme-color" content="#2563eb" />
   <!-- Piper Plus 離線語音：從本機 node_modules 載入（npm install 後即可離線） -->
   <script type="importmap">
   {
@@ -112,6 +116,7 @@
 
       <section class="settings-group">
         <h3>後端 Proxy（建議）</h3>
+        <p class="hint">在 GitHub Pages / 手機獨立使用時沒有後端：請關閉 Proxy 並直接填入 Azure 或 Google Key（DeepL 不支援瀏覽器直連，Edge 語音與聲紋辨識也需要 proxy）。</p>
         <label class="inline-checkbox">
           <input type="checkbox" id="cfg-use-proxy" />
           啟用 Proxy 模式（避免 CORS 與前端外露 API Key）
@@ -178,5 +183,10 @@
   <script src="js/piperplus.js?v=20261111-14"></script>
   <script src="js/tts.js?v=20261111-14"></script>
   <script src="js/app.js?v=20261111-14"></script>
+  <script>
+    if ('serviceWorker' in navigator && window.isSecureContext) {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    }
+  </script>
 </body>
 </html>

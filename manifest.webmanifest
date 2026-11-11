@@ -1,0 +1,16 @@
+{
+  "name": "雙向即時語音翻譯",
+  "short_name": "語音翻譯",
+  "description": "雙人即時語音翻譯：各自選語言，說話後自動翻譯並播放",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#2563eb",
+  "theme_color": "#2563eb",
+  "lang": "zh-Hant",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

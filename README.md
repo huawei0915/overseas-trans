@@ -28,6 +28,19 @@ python3 -m http.server 8000
 # 開啟 http://localhost:8000
 ```
 
+## 部署到 GitHub Pages / 安裝到手機（PWA）
+
+專案內含 `manifest.webmanifest` 與 `sw.js`，部署到 HTTPS 網址後可在手機 Chrome 選單 →「安裝應用程式 / 加到主畫面」。推送到 `master`/`main` 時，[.github/workflows/pages.yml](.github/workflows/pages.yml) 會自動下載模型、組出靜態網站並部署（本機可用 `npm run build:pages` 預覽 `dist-pages/`）。
+
+```bash
+git add -A && git commit -m "feat: PWA + GitHub Pages"
+gh repo create overseas-trans --public --source=. --push
+# 到 repo Settings → Pages → Source 選「GitHub Actions」
+# 網址：https://<帳號>.github.io/overseas-trans/
+```
+
+純靜態環境沒有 proxy：預設改為「直連 API + Web Speech 播放」，請在手機的設定面板貼上 Azure 或 Google Key（只存於該手機的 localStorage，不要寫進 repo）。DeepL、Edge Read Aloud 語音、pyannote 聲紋辨識需要後端，在此模式不可用。
+
 ## 使用方式
 
 1. 後端 proxy 啟動後，前端設定面板預設使用 **Proxy 模式**（`http://localhost:8787`）。

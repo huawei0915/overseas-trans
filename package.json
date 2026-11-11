@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "setup:offline": "node scripts/setup-offline.mjs",
+    "build:pages": "node scripts/build-pages.mjs",
     "start:proxy": "node proxy-server.mjs",
     "start:diarize": "diarize/.venv/bin/python diarize/server.py"
   },

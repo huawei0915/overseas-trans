@@ -10,7 +10,7 @@ const TTS_ENGINE_OPTIONS = [
   { id: 'piper', label: 'Piper TTS（本機離線・中英西法德葡越）' },
   { id: 'kokoro', label: 'Kokoro TTS（本機離線・僅英文）' },
 ];
-const DEFAULT_TTS_ENGINE = 'edge';
+const DEFAULT_TTS_ENGINE = DEFAULT_CONFIG.ttsEngine;
 
 const EDGE_VOICES = {
   'zh-TW': 'zh-TW-HsiaoChenNeural',
