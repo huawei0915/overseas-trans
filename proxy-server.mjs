@@ -2,9 +2,42 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
 
 const PORT = Number(process.env.PORT || 8787);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const EDGE_VOICE_PATTERN = /^[a-z]{2,3}-[A-Z]{2,4}-[A-Za-z]+Neural$/;
+const EDGE_TTS_MAX_CHARS = 1500;
+
+function escapeXml(s) {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+// Microsoft Edge Read Aloud：只能在後端呼叫（瀏覽器端不被允許），回傳 MP3 Buffer
+async function synthesizeEdge(text, voice) {
+  const tts = new MsEdgeTTS();
+  try {
+    await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+    const { audioStream } = tts.toStream(escapeXml(text));
+    const chunks = [];
+    await new Promise((resolve, reject) => {
+      audioStream.on('data', (d) => chunks.push(d));
+      audioStream.on('close', resolve);
+      audioStream.on('error', reject);
+    });
+    const buf = Buffer.concat(chunks);
+    if (!buf.length) throw new Error('Edge TTS 未回傳音訊');
+    return buf;
+  } finally {
+    tts.close?.();
+  }
+}
 
 const LANGUAGES = [
   { id: 'zh-TW', azure: 'zh-Hant', google: 'zh-TW', deepl: 'ZH-HANT' },
@@ -252,6 +285,23 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
+    if (req.url === '/api/tts/edge') {
+      const { text, voice } = await readBody(req);
+      const cleanText = String(text || '').trim();
+      const voiceName = String(voice || '');
+      if (!cleanText) return sendJson(res, 400, { error: 'text 必填' });
+      if (cleanText.length > EDGE_TTS_MAX_CHARS) return sendJson(res, 400, { error: `text 過長（上限 ${EDGE_TTS_MAX_CHARS} 字）` });
+      if (!EDGE_VOICE_PATTERN.test(voiceName)) return sendJson(res, 400, { error: 'voice 格式無效' });
+      const audio = await synthesizeEdge(cleanText, voiceName);
+      res.writeHead(200, {
+        'Content-Type': 'audio/mpeg',
+        'Content-Length': audio.length,
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'no-store',
+      });
+      return res.end(audio);
+    }
+
     if (req.url === '/api/translate') {
       const { text, fromId, toId, runtimeConfig } = await readBody(req);
       if (!text || !fromId || !toId) return sendJson(res, 400, { error: 'text, fromId, toId 必填' });

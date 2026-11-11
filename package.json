@@ -5,5 +5,8 @@
   "type": "module",
   "scripts": {
     "start:proxy": "node proxy-server.mjs"
+  },
+  "dependencies": {
+    "msedge-tts": "^2.1.1"
   }
 }

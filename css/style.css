@@ -139,6 +139,16 @@ body {
   gap: 12px;
 }
 .mic-btn.master { padding: 20px; font-size: 1.15rem; }
+
+.tts-engine-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.tts-engine-row label { font-size: 0.9rem; color: var(--muted); white-space: nowrap; }
+.tts-engine-row select { flex: 0 1 420px; min-width: 220px; }
+.tts-status { font-size: 0.82rem; color: var(--muted); }
 .speaker-indicator { font-size: 0.8rem; color: var(--muted); margin-bottom: 6px; }
 
 @keyframes pulse {

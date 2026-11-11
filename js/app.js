@@ -17,6 +17,8 @@
     manualText: $('manual-text'),
     manualSend: $('manual-send'),
     ttsIndicator: $('tts-indicator'),
+    ttsEngine: $('tts-engine'),
+    ttsStatus: $('tts-status'),
     providerStatus: $('provider-status'),
     settingsModal: $('settings-modal'),
     providerOrder: $('provider-order'),
@@ -31,8 +33,38 @@
 
   let cfg = AppConfig.load();
   const stt = new SpeechEngine();
-  const tts = new TTSPlayer();
+  const tts = new TTSPlayer(() => cfg);
   const translator = new Translator();
+
+  // ---------- 語音引擎選單 ----------
+
+  tts.onStatus = (message) => {
+    els.ttsStatus.textContent = message;
+  };
+
+  els.ttsEngine.innerHTML = '';
+  for (const opt of TTS_ENGINE_OPTIONS) {
+    const o = document.createElement('option');
+    o.value = opt.id;
+    o.textContent = opt.label;
+    els.ttsEngine.appendChild(o);
+  }
+  if (!TTS_ENGINE_OPTIONS.some((o) => o.id === cfg.ttsEngine)) cfg.ttsEngine = DEFAULT_TTS_ENGINE;
+  els.ttsEngine.value = cfg.ttsEngine;
+
+  // Piper / Kokoro 需先下載模型：換引擎或語言時預先準備，避免第一句才等待
+  function preloadTts() {
+    void tts.preload([cfg.langA, cfg.langB]);
+  }
+
+  els.ttsEngine.addEventListener('change', () => {
+    tts.stopAll();
+    cfg.ttsEngine = els.ttsEngine.value;
+    AppConfig.save(cfg);
+    els.ttsStatus.textContent = '';
+    preloadTts();
+  });
+  preloadTts();
 
   // ---------- 語言選單 ----------
 
@@ -53,11 +85,13 @@
   els.langA.addEventListener('change', () => {
     cfg.langA = els.langA.value;
     AppConfig.save(cfg);
+    preloadTts();
     if (sessionActive && currentSpeaker === 'a') restartRecognition();
   });
   els.langB.addEventListener('change', () => {
     cfg.langB = els.langB.value;
     AppConfig.save(cfg);
+    preloadTts();
     if (sessionActive && currentSpeaker === 'b') restartRecognition();
   });
 
@@ -144,7 +178,7 @@
     return card;
   }
 
-  function setCardTranslation(card, text, providerId, ttsLang = null) {
+  function setCardTranslation(card, text, providerId, targetLangId = null) {
     const slot = card.querySelector('.msg-translation');
     slot.classList.remove('pending');
     slot.textContent = '';
@@ -161,7 +195,7 @@
       slot.appendChild(tag);
     }
 
-    if (ttsLang) {
+    if (targetLangId) {
       const replayBtn = document.createElement('button');
       replayBtn.type = 'button';
       replayBtn.className = 'replay-btn';
@@ -170,7 +204,7 @@
       replayBtn.textContent = '🔊';
       replayBtn.addEventListener('click', () => {
         tts.stopAll();
-        tts.speak(text, ttsLang);
+        tts.speak(text, targetLangId);
       });
       slot.appendChild(replayBtn);
     }
@@ -223,10 +257,8 @@
 
     try {
       const { text: translated, provider } = await translator.translate(text, sourceLangId, targetLangId, cfg);
-      const targetLang = findLanguage(targetLangId);
-      const ttsLang = targetLang ? targetLang.tts : targetLangId;
-      setCardTranslation(card, translated, provider, ttsLang);
-      tts.speak(translated, ttsLang);
+      setCardTranslation(card, translated, provider, targetLangId);
+      tts.speak(translated, targetLangId);
     } catch (err) {
       setCardError(card, err.message);
       renderProviderStatus();

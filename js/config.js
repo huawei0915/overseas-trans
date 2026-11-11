@@ -10,6 +10,7 @@ const DEFAULT_CONFIG = {
   providerOrder: ['azure', 'google', 'deepl'],
   useProxy: true,
   proxyBaseUrl: 'http://localhost:8787',
+  ttsEngine: 'edge', // 'webspeech' | 'edge' | 'piper' | 'kokoro'
   langA: 'zh-TW',
   langB: 'en',
 };
