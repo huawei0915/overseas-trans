@@ -1,4 +1,4 @@
-// 主流程：STT → 靜音 5 秒 → 容錯翻譯 → TTS 播放 → 對話紀錄
+// 主流程：STT → 靜音 5 秒 → 聲紋辨識甲/乙方（pyannote）→ 容錯翻譯 → TTS 播放 → 對話紀錄
 (() => {
   const $ = (id) => document.getElementById(id);
 
@@ -19,6 +19,9 @@
     ttsIndicator: $('tts-indicator'),
     ttsEngine: $('tts-engine'),
     ttsStatus: $('tts-status'),
+    autoSpeaker: $('auto-speaker'),
+    speakerReset: $('speaker-reset'),
+    speakerStatus: $('speaker-status'),
     providerStatus: $('provider-status'),
     settingsModal: $('settings-modal'),
     providerOrder: $('provider-order'),
@@ -35,6 +38,106 @@
   const stt = new SpeechEngine();
   const tts = new TTSPlayer(() => cfg);
   const translator = new Translator();
+  const recorder = new SpeakerRecorder();
+  const identifier = new SpeakerIdentifier(() => (cfg.proxyBaseUrl || 'http://localhost:8787').replace(/\/+$/, ''));
+
+  const SPEAKER_PAD_MS = 1200;   // 辨識結果比實際開口晚出現，往前多取一點音訊
+  const SPEAKER_PROBE_MS = 1800; // 開口後多久做一次即時說話者偵測
+  let clusterToParty = {};       // pyannote 聲紋群 → 'a' | 'b'
+  let audioStartMs = 0;          // 本句音訊起點（說話者切換重啟辨識時保留）
+  let probeTimer = null;
+
+  function setSpeakerStatus(message, isError = false) {
+    els.speakerStatus.textContent = message;
+    els.speakerStatus.classList.toggle('error', isError);
+  }
+
+  async function checkSpeakerService() {
+    if (!cfg.autoSpeaker) {
+      setSpeakerStatus('');
+      return false;
+    }
+    try {
+      await identifier.health();
+      setSpeakerStatus('聲紋服務就緒');
+      return true;
+    } catch (err) {
+      setSpeakerStatus(`聲紋服務無法使用（${err.message}），已改用語言偵測`, true);
+      return false;
+    }
+  }
+
+  els.autoSpeaker.checked = !!cfg.autoSpeaker;
+  els.autoSpeaker.addEventListener('change', () => {
+    cfg.autoSpeaker = els.autoSpeaker.checked;
+    AppConfig.save(cfg);
+    if (sessionActive) {
+      if (cfg.autoSpeaker) void startSpeakerRecorder();
+      else recorder.stop();
+    }
+    void checkSpeakerService();
+  });
+  els.speakerReset.addEventListener('click', () => {
+    identifier.reset();
+    clusterToParty = {};
+    audioStartMs = 0;
+    setSpeakerStatus('已重置聲紋，下一句會重新判定甲/乙方');
+  });
+
+  async function startSpeakerRecorder() {
+    try {
+      await recorder.start();
+    } catch {
+      setSpeakerStatus('無法錄音進行聲紋辨識，已改用語言偵測', true);
+    }
+  }
+
+  // 第一位被辨識出的說話者歸給「當下選定的說話者」，第二位歸給另一方
+  function partyForCluster(idx, allowAssign) {
+    if (!('0' in clusterToParty)) {
+      if (!allowAssign) return null;
+      clusterToParty['0'] = currentSpeaker;
+      clusterToParty['1'] = currentSpeaker === 'a' ? 'b' : 'a';
+    }
+    return clusterToParty[String(idx)] || null;
+  }
+
+  async function identifyByVoice(startMs, endMs, enroll) {
+    if (!cfg.autoSpeaker || !recorder.running || !startMs) return null;
+    const wav = recorder.sliceWav(startMs - SPEAKER_PAD_MS, endMs + 300);
+    if (!wav) return null;
+    try {
+      const r = await identifier.identify(wav, enroll);
+      setSpeakerStatus('聲紋服務就緒');
+      if (r.speaker != null) return partyForCluster(r.speaker, enroll);
+      // 即時偵測時與已登錄的聲紋都不像 → 判定為另一方開口
+      if (!enroll && r.similarities?.length && '0' in clusterToParty) {
+        return clusterToParty['0'] === 'a' ? 'b' : 'a';
+      }
+      return null;
+    } catch (err) {
+      setSpeakerStatus(`聲紋辨識失敗（${err.message}），已改用語言偵測`, true);
+      return null;
+    }
+  }
+
+  function switchSpeaker(party) {
+    currentSpeaker = party;
+    updateMicUI();
+    if (sessionActive && !stt.paused) restartRecognition();
+  }
+
+  // 說話途中先偵測是誰，若換人了就立刻改用對方語言重新辨識（否則整句會用錯語言辨識）
+  function scheduleSpeakerProbe(startMs) {
+    clearTimeout(probeTimer);
+    if (!cfg.autoSpeaker || !recorder.running || !('0' in clusterToParty)) return;
+    probeTimer = setTimeout(async () => {
+      const party = await identifyByVoice(audioStartMs || startMs, Date.now(), false);
+      if (!party || party === currentSpeaker || !sessionActive || stt.startMs !== startMs) return;
+      stt.discardPending();
+      switchSpeaker(party);
+    }, SPEAKER_PROBE_MS);
+  }
 
   // ---------- 語音引擎選單 ----------
 
@@ -138,6 +241,9 @@
   tts.onStateChange = (speaking) => {
     els.ttsIndicator.classList.toggle('hidden', !speaking);
     // 播放譯文時暫停辨識，避免麥克風把喇叭聲音又辨識回去造成迴圈
+    recorder.clear();
+    audioStartMs = 0;
+    clearTimeout(probeTimer);
     if (sessionActive) {
       if (speaking) stt.pause();
       else stt.resume();
@@ -166,7 +272,7 @@
     card.className = `msg from-${party}`;
     const time = new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const detectedName = detectedBy && PROVIDERS[detectedBy] ? PROVIDERS[detectedBy].name : detectedBy;
-    const detectedTag = detectedName ? ` · 自動偵測(${detectedName})` : '';
+    const detectedTag = detectedBy === 'pyannote' ? ' · 聲紋辨識' : detectedName ? ` · 自動偵測(${detectedName})` : '';
     card.innerHTML = `
       <div class="msg-meta">${party === 'a' ? '甲方' : '乙方'} · ${lang ? lang.label : sourceLangId}${detectedTag} · ${time}</div>
       <div class="msg-original"></div>
@@ -226,12 +332,23 @@
     return currentSpeaker;
   }
 
-  async function handleUtterance(text) {
+  async function handleUtterance(text, meta = null) {
     let party = currentSpeaker;
     let sourceLangId = party === 'a' ? cfg.langA : cfg.langB;
     let detectedBy = null;
 
-    const detected = await translator.detectLanguage(text, cfg);
+    const startMs = meta?.startMs ? Math.min(meta.startMs, audioStartMs || meta.startMs) : 0;
+    audioStartMs = 0;
+    const voiceParty = meta ? await identifyByVoice(startMs, meta.endMs, true) : null;
+
+    if (voiceParty) {
+      party = voiceParty;
+      sourceLangId = party === 'a' ? cfg.langA : cfg.langB;
+      detectedBy = 'pyannote';
+      if (party !== currentSpeaker) switchSpeaker(party);
+    }
+
+    const detected = voiceParty ? null : await translator.detectLanguage(text, cfg);
     if (detected?.langId) {
       sourceLangId = detected.langId;
       detectedBy = detected.provider;
@@ -292,10 +409,15 @@
       onInterim: (text) => {
         els.interim.textContent = text || '聆聽中…';
       },
-      onUtterance: (text) => {
+      onSpeechStart: (startMs) => {
+        if (!audioStartMs) audioStartMs = startMs;
+        scheduleSpeakerProbe(startMs);
+      },
+      onUtterance: (text, meta) => {
         // 結句後繼續聆聽，不需再按任何按鈕
+        clearTimeout(probeTimer);
         els.interim.textContent = '聆聽中…';
-        handleUtterance(text);
+        handleUtterance(text, meta);
       },
       onError: (code) => {
         if (code === 'not-allowed' || code === 'service-not-allowed') {
@@ -360,12 +482,15 @@
     }
     sessionActive = true;
     updateMicUI();
+    if (cfg.autoSpeaker && (await checkSpeakerService())) await startSpeakerRecorder();
     startRecognition();
   }
 
   function stopSession() {
     sessionActive = false;
-    stt.stop(); // 會先把累積到一半的那一句翻譯完
+    clearTimeout(probeTimer);
+    stt.stop(); // 會先把累積到一半的那一句翻譯完（需在關閉錄音前，才取得得到音訊）
+    setTimeout(() => { if (!sessionActive) recorder.stop(); }, 3000);
     tts.stopAll();
     els.interim.textContent = '';
     updateMicUI();

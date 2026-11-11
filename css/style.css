@@ -148,7 +148,14 @@ body {
 }
 .tts-engine-row label { font-size: 0.9rem; color: var(--muted); white-space: nowrap; }
 .tts-engine-row select { flex: 0 1 420px; min-width: 220px; }
+.speaker-auto-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
 .tts-status { font-size: 0.82rem; color: var(--muted); }
+.tts-status.error { color: #d9534f; }
 .speaker-indicator { font-size: 0.8rem; color: var(--muted); margin-bottom: 6px; }
 
 @keyframes pulse {

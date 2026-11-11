@@ -50,6 +50,14 @@
       <select id="tts-engine" class="lang-select" aria-label="語音播放引擎"></select>
       <span id="tts-status" class="tts-status" aria-live="polite"></span>
     </div>
+    <div class="speaker-auto-row">
+      <label class="inline-checkbox">
+        <input type="checkbox" id="auto-speaker" />
+        🧑‍🤝‍🧑 自動辨識甲/乙方（pyannote 聲紋）
+      </label>
+      <button id="speaker-reset" class="btn btn-small" type="button">重置聲紋</button>
+      <span id="speaker-status" class="tts-status" aria-live="polite"></span>
+    </div>
     <div class="interim-wrap">
       <div id="speaker-indicator" class="speaker-indicator">目前說話者：甲方</div>
       <div id="interim" class="interim-bubble" aria-live="polite"></div>
@@ -151,11 +159,12 @@
     </div>
   </div>
 
-  <script src="js/langs.js?v=20261111-11"></script>
-  <script src="js/config.js?v=20261111-11"></script>
-  <script src="js/translate.js?v=20261111-11"></script>
-  <script src="js/stt.js?v=20261111-11"></script>
-  <script src="js/tts.js?v=20261111-11"></script>
-  <script src="js/app.js?v=20261111-11"></script>
+  <script src="js/langs.js?v=20261111-12"></script>
+  <script src="js/config.js?v=20261111-12"></script>
+  <script src="js/translate.js?v=20261111-12"></script>
+  <script src="js/speaker.js?v=20261111-12"></script>
+  <script src="js/stt.js?v=20261111-12"></script>
+  <script src="js/tts.js?v=20261111-12"></script>
+  <script src="js/app.js?v=20261111-12"></script>
 </body>
 </html>

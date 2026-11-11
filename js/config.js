@@ -13,6 +13,7 @@ const DEFAULT_CONFIG = {
   ttsEngine: 'edge', // 'webspeech' | 'edge' | 'piper' | 'kokoro'
   langA: 'zh-TW',
   langB: 'en',
+  autoSpeaker: true, // 以 pyannote.audio 聲紋自動分辨甲/乙方
 };
 
 const AppConfig = {

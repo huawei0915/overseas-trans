@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "start:proxy": "node proxy-server.mjs"
+    "start:proxy": "node proxy-server.mjs",
+    "start:diarize": "diarize/.venv/bin/python diarize/server.py"
   },
   "dependencies": {
     "msedge-tts": "^2.1.1"

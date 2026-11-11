@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
 
 const PORT = Number(process.env.PORT || 8787);
+const DIARIZE_URL = process.env.DIARIZE_URL || 'http://127.0.0.1:8788';
+const SPEAKER_MAX_BYTES = 8_000_000;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const EDGE_VOICE_PATTERN = /^[a-z]{2,3}-[A-Z]{2,4}-[A-Za-z]+Neural$/;
@@ -273,10 +275,40 @@ async function readBody(req) {
   return raw ? JSON.parse(raw) : {};
 }
 
+async function readRawBody(req, limit) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > limit) throw new Error('Request body too large');
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+// 轉發到 pyannote 說話者辨識服務（diarize/server.py）
+async function forwardSpeaker(req, res) {
+  const { pathname, search } = new URL(req.url, 'http://localhost');
+  const target = pathname.replace(/^\/api\/speaker/, '');
+  if (!['/health', '/identify', '/reset'].includes(target)) return sendJson(res, 404, { error: 'Not found' });
+  try {
+    const init = { method: req.method };
+    if (req.method === 'POST') {
+      init.body = await readRawBody(req, SPEAKER_MAX_BYTES);
+      init.headers = { 'Content-Type': req.headers['content-type'] || 'application/octet-stream' };
+    }
+    const upstream = await fetch(`${DIARIZE_URL}${target}${search}`, init);
+    return sendJson(res, upstream.status, await upstream.json());
+  } catch (err) {
+    return sendJson(res, 503, { error: `說話者辨識服務無法使用：${err?.cause?.code || err.message}` });
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
     return sendJson(res, 204, {});
   }
+  if (req.url.startsWith('/api/speaker/')) return forwardSpeaker(req, res);
   if (req.method === 'GET' && req.url === '/health') {
     return sendJson(res, 200, { ok: true, exhausted: [...exhausted] });
   }

@@ -1,5 +1,5 @@
 // 語音辨識：Web Speech API + 5 秒靜音自動結句
-// callbacks: { onInterim(text), onUtterance(text), onError(code), onStateChange(listening) }
+// callbacks: { onInterim(text), onSpeechStart(startMs), onUtterance(text, { startMs, endMs }), onError(code), onStateChange(listening) }
 
 const SILENCE_MS = 5000;
 
@@ -15,7 +15,17 @@ class SpeechEngine {
     this.timer = null;
     this.finalText = '';
     this.interimText = '';
+    this.startMs = 0;   // 本句第一次收到辨識結果的時間
+    this.lastMs = 0;    // 本句最後一次收到辨識結果的時間
     this.callbacks = {};
+  }
+
+  // 丟棄尚未結句的文字（例如發現說話者／語言切換，原本以錯誤語言辨識出的內容）
+  discardPending() {
+    this._clearTimer();
+    this.finalText = '';
+    this.interimText = '';
+    this.startMs = 0;
   }
 
   start(lang, callbacks) {
@@ -53,6 +63,7 @@ class SpeechEngine {
     this._clearTimer();
     this.finalText = '';
     this.interimText = '';
+    this.startMs = 0;
     const rec = this.rec;
     this.rec = null;
     if (rec) {
@@ -91,6 +102,12 @@ class SpeechEngine {
     rec.interimResults = true;
 
     rec.onresult = (event) => {
+      const now = Date.now();
+      if (!this.startMs) {
+        this.startMs = now;
+        this.callbacks.onSpeechStart?.(now);
+      }
+      this.lastMs = now;
       let interim = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
         if (event.results[i].isFinal) this.finalText += event.results[i][0].transcript;
@@ -151,6 +168,8 @@ class SpeechEngine {
     const text = (this.finalText + this.interimText).trim();
     this.finalText = '';
     this.interimText = '';
-    if (text) this.callbacks.onUtterance?.(text);
+    const meta = { startMs: this.startMs, endMs: this.lastMs };
+    this.startMs = 0;
+    if (text) this.callbacks.onUtterance?.(text, meta);
   }
 }

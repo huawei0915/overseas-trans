@@ -1,0 +1,5 @@
+torch==2.2.2
+torchaudio==2.2.2
+numpy<2
+pyannote.audio==3.3.2
+huggingface_hub<0.26

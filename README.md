@@ -17,6 +17,11 @@ cp .env.example .env
 # 依需求填入 AZURE_KEY / GOOGLE_KEY / DEEPL_KEY（至少一組）
 npm run start:proxy
 
+# 1b)（選用）啟動 pyannote.audio 說話者辨識服務，自動分辨甲方／乙方（見下方「自動辨識甲方／乙方」）
+python3.11 -m venv diarize/.venv
+diarize/.venv/bin/pip install -r diarize/requirements.txt
+npm run start:diarize
+
 # 2) 另開一個終端啟動前端靜態頁
 python3 -m http.server 8000
 
@@ -34,6 +39,17 @@ python3 -m http.server 8000
 7. 定稿後自動翻譯 → 播放譯文語音 → 顯示於對話紀錄，全程不需再按任何按鈕。
 8. 播放譯文時會自動暫停辨識，避免麥克風把喇叭聲音誤收進來。
 9. 對話結束時按「停止對話」。
+
+## 自動辨識甲方／乙方（pyannote.audio）
+
+勾選畫面上的「自動辨識甲/乙方（pyannote 聲紋）」後，系統會一邊辨識語音、一邊錄下麥克風音訊，用 `pyannote/wespeaker-voxceleb-resnet34-LM`（pyannote.audio 的 speaker embedding 模型，公開模型、不需 HF token）取出每句話的聲紋並線上分群成兩位說話者，再自動：
+
+- 判定這句話是甲方還是乙方 → 以該方語言為來源、另一方語言為譯文，自動切換翻譯方向與播放語言。
+- **第一位被辨識出的說話者歸給「當下選定的說話者」**（預設甲方；開始前點卡片可改），第二位歸給另一方。
+- 說話途中（約開口後 1.8 秒）會即時偵測是否換人，換人就立刻改用對方語言重新辨識（換人前 ~2 秒的內容會被捨棄，因為是以錯誤語言辨識的）。
+- 聲紋判錯或換了現場的人時，按「重置聲紋」重新開始；服務未啟動或失敗時自動退回原本的「語言偵測」。
+
+設定：環境變數 `DIARIZE_THRESHOLD`（預設 0.5，餘弦相似度≥此值視為同一人）、`DIARIZE_MIN_SECONDS`（預設 1.0，過短的音訊不辨識）、`DIARIZE_PORT`（預設 8788；proxy 以 `DIARIZE_URL` 轉發）。音訊只傳到本機服務。
 
 ## 自動容錯
 
@@ -64,8 +80,10 @@ js/config.js    localStorage 設定存取
 js/translate.js 翻譯 provider 抽象層 + 額度容錯切換
 js/stt.js       Web Speech 辨識 + 5 秒靜音自動結句
 js/tts.js       多引擎 TTS（Web Speech / Edge / Piper / Kokoro）+ 播放佇列 + 自動退回
+js/speaker.js   麥克風錄音切段 + 呼叫聲紋服務
 js/app.js       主流程串接
-proxy-server.mjs 後端 Proxy（/api/translate, /api/detect, /api/test, /api/tts/edge）
+diarize/server.py pyannote.audio 說話者辨識服務（/identify, /reset, /health）
+proxy-server.mjs 後端 Proxy（/api/translate, /api/detect, /api/test, /api/tts/edge, /api/speaker/*）
 ```
 
 ## 注意事項
