@@ -4,10 +4,14 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "setup:offline": "node scripts/setup-offline.mjs",
     "start:proxy": "node proxy-server.mjs",
     "start:diarize": "diarize/.venv/bin/python diarize/server.py"
   },
   "dependencies": {
-    "msedge-tts": "^2.1.1"
+    "msedge-tts": "^2.1.1",
+    "onnxruntime-web": "^1.30.0",
+    "opencc-js": "^1.4.2",
+    "piper-plus": "^0.8.2"
   }
 }

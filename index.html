@@ -5,6 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>雙向即時語音翻譯</title>
   <link rel="stylesheet" href="css/style.css" />
+  <!-- Piper Plus 離線語音：從本機 node_modules 載入（npm install 後即可離線） -->
+  <script type="importmap">
+  {
+    "imports": {
+      "piper-plus": "./node_modules/piper-plus/src/index.js",
+      "@piper-plus/g2p": "./node_modules/@piper-plus/g2p/src/index.js",
+      "onnxruntime-web": "./node_modules/onnxruntime-web/dist/ort.wasm.min.mjs",
+      "opencc-js/t2cn": "./node_modules/opencc-js/dist/esm/t2cn.js"
+    }
+  }
+  </script>
 </head>
 <body>
   <header class="app-header">
@@ -164,7 +175,8 @@
   <script src="js/translate.js?v=20261111-12"></script>
   <script src="js/speaker.js?v=20261111-12"></script>
   <script src="js/stt.js?v=20261111-12"></script>
-  <script src="js/tts.js?v=20261111-12"></script>
-  <script src="js/app.js?v=20261111-12"></script>
+  <script src="js/piperplus.js?v=20261111-14"></script>
+  <script src="js/tts.js?v=20261111-14"></script>
+  <script src="js/app.js?v=20261111-14"></script>
 </body>
 </html>

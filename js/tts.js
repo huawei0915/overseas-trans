@@ -1,4 +1,4 @@
-// 多引擎文字轉語音（TTS）：Web Speech / Microsoft Edge Read Aloud / Piper / Kokoro
+// 多引擎文字轉語音（TTS）：Web Speech / Microsoft Edge Read Aloud / Piper Plus / Piper / Kokoro
 // 各引擎統一介面：supports(langId)、speak(text, langId, ctx)、preload?(langIds, ctx)
 // ctx 提供：cancelled()、cached(key, producer)、playBlob(blob)、status(msg)
 // 引擎不支援該語言或播放失敗時，自動退回 Web Speech 並在狀態列提示。
@@ -6,6 +6,7 @@
 const TTS_ENGINE_OPTIONS = [
   { id: 'webspeech', label: 'Web Speech API（瀏覽器內建）' },
   { id: 'edge', label: 'Microsoft Edge Read Aloud（推薦・需啟動 proxy）' },
+  { id: 'piperplus', label: 'Piper Plus（本機離線・日韓中英西法葡）' },
   { id: 'piper', label: 'Piper TTS（本機離線・中英西法德葡越）' },
   { id: 'kokoro', label: 'Kokoro TTS（本機離線・僅英文）' },
 ];
@@ -189,6 +190,17 @@ const TTS_ENGINES = {
         ctx.status('Piper：合成語音中…');
         return piper.predict({ text, voiceId });
       });
+      await ctx.playBlob(blob);
+    },
+  },
+
+  piperplus: {
+    id: 'piperplus',
+    name: 'Piper Plus',
+    supports: isPiperPlusLang,
+    preload: piperPlusPreload,
+    async speak(text, langId, ctx) {
+      const blob = await ctx.cached(`piperplus|${langId}|${text}`, () => piperPlusSynthesize(text, langId, ctx));
       await ctx.playBlob(blob);
     },
   },
