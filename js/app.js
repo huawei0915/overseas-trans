@@ -216,6 +216,15 @@
     }
   }
   translator.onStatusChange = renderProviderStatus;
+
+  let toastTimer = null;
+  translator.onNotice = (message) => {
+    const el = $('toast');
+    el.textContent = message;
+    el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.hidden = true; }, 8000);
+  };
   renderProviderStatus();
 
   // ---------- 瀏覽器支援檢查 ----------
@@ -668,8 +677,4 @@
     closeSettings();
   });
 
-  // 若尚未設定任何 key，首次開啟時提示
-  if (!cfg.useProxy && !cfg.azureKey && !cfg.googleKey && !cfg.deeplKey) {
-    openSettings();
-  }
 })();

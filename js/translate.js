@@ -15,6 +15,26 @@ function normalizeProxyBaseUrl(url) {
   return String(url || '').trim().replace(/\/+$/, '');
 }
 
+// 免費 Google 翻譯端點（無需 Key、無保證額度）：所有付費 provider 失敗或額度用盡時的最後備援
+const FREE_PROVIDER_ID = 'free';
+const GOOGLE_FREE_URL = 'https://translate.googleapis.com/translate_a/single';
+
+async function googleFreeRequest(text, from, to) {
+  const body = new URLSearchParams({ client: 'gtx', sl: from, tl: to, dt: 't', q: text });
+  const res = await fetch(GOOGLE_FREE_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  if (!res.ok) throw new Error(`免費翻譯錯誤 ${res.status}${res.status === 429 ? '（請求過於頻繁）' : ''}`);
+  const data = await res.json();
+  if (!Array.isArray(data?.[0])) throw new Error('免費翻譯回應格式異常');
+  return {
+    text: data[0].map((seg) => seg?.[0] || '').join(''),
+    detected: typeof data[2] === 'string' ? data[2] : null,
+  };
+}
+
 const PROVIDERS = {
   azure: {
     id: 'azure',
@@ -99,6 +119,21 @@ const PROVIDERS = {
     },
   },
 
+  [FREE_PROVIDER_ID]: {
+    id: FREE_PROVIDER_ID,
+    name: 'Google 免費翻譯',
+    isConfigured: () => true,
+    async translate(text, fromId, toId) {
+      const from = providerLangCode('google', fromId) || 'auto';
+      const to = providerLangCode('google', toId);
+      if (!to) throw new UnsupportedLangError('免費翻譯不支援此語言');
+      return (await googleFreeRequest(text, from, to)).text;
+    },
+    async detectLanguage(text) {
+      return (await googleFreeRequest(text, 'auto', 'en')).detected;
+    },
+  },
+
   deepl: {
     id: 'deepl',
     name: 'DeepL',
@@ -137,6 +172,18 @@ class Translator {
     this.exhausted = new Set(); // 本次 session 中已耗盡額度的 provider
     this.lastUsed = null;
     this.onStatusChange = null; // 狀態改變時通知 UI
+    this.onNotice = null; // (message) 需要提示使用者時（例如額度用盡改用免費服務）
+  }
+
+  _noticeExhausted(pid, reason) {
+    this.exhausted.add(pid);
+    this.onNotice?.(`${PROVIDERS[pid].name} 額度已用盡或授權失敗（${reason}），已自動切換至下一個翻譯服務。`);
+    this._notify();
+  }
+
+  // 付費 provider 依設定順序，免費服務永遠排在最後當備援
+  _order(cfg) {
+    return [...cfg.providerOrder.filter((p) => p !== FREE_PROVIDER_ID), FREE_PROVIDER_ID];
   }
 
   _notify() {
@@ -158,44 +205,34 @@ class Translator {
     return data;
   }
 
-  // 回傳 { text, provider }；失敗時拋出 Error
+  // 回傳 { text, provider }；全部 provider（含免費備援）都失敗時拋出 Error
   async translate(text, fromId, toId, cfg) {
+    const failures = [];
     if (cfg.useProxy) {
-      const data = await this._proxyRequest(
-        '/api/translate',
-        {
-          text,
-          fromId,
-          toId,
-          runtimeConfig: {
-            azureKey: cfg.azureKey,
-            azureRegion: cfg.azureRegion,
-            googleKey: cfg.googleKey,
-            deeplKey: cfg.deeplKey,
-            deeplPlan: cfg.deeplPlan,
-            providerOrder: cfg.providerOrder,
-          },
-        },
-        cfg
-      );
-      if (data.provider && this.lastUsed !== data.provider) {
-        this.lastUsed = data.provider;
-        this._notify();
+      try {
+        const data = await this._proxyRequest(
+          '/api/translate',
+          { text, fromId, toId, runtimeConfig: this._runtimeConfig(cfg) },
+          cfg
+        );
+        if (data.provider && this.lastUsed !== data.provider) {
+          if (data.provider === FREE_PROVIDER_ID) {
+            this.onNotice?.('付費翻譯服務不可用或額度用盡，已自動切換為 Google 免費翻譯。');
+          }
+          this.lastUsed = data.provider;
+          this._notify();
+        }
+        return { text: data.text, provider: data.provider || null };
+      } catch (err) {
+        // proxy 無法使用（未啟動、全部失敗）時，由瀏覽器直連免費翻譯
+        failures.push(`Proxy：${err.message}`);
+        return this._translateFree(text, fromId, toId, failures);
       }
-      return { text: data.text, provider: data.provider || null };
     }
 
-    let sawConfigured = false;
-    let sawExhaustedConfigured = false;
-    const failures = [];
-    for (const pid of cfg.providerOrder) {
+    for (const pid of this._order(cfg)) {
       const provider = PROVIDERS[pid];
-      if (!provider || !provider.isConfigured(cfg)) continue;
-      if (this.exhausted.has(pid)) {
-        sawExhaustedConfigured = true;
-        continue;
-      }
-      sawConfigured = true;
+      if (!provider || !provider.isConfigured(cfg) || this.exhausted.has(pid)) continue;
       try {
         const out = await provider.translate(text, fromId, toId, cfg);
         if (this.lastUsed !== pid) {
@@ -204,113 +241,116 @@ class Translator {
         }
         return { text: out, provider: pid };
       } catch (err) {
-        if (err instanceof QuotaError) {
-          this.exhausted.add(pid);
-          failures.push(err.message);
-          this._notify();
-          continue;
-        }
-        if (err instanceof UnsupportedLangError) {
-          failures.push(err.message);
-          continue;
-        }
-        throw err; // 網路等非預期錯誤直接上拋
+        failures.push(`${provider.name}：${err.message}`);
+        if (err instanceof QuotaError) this._noticeExhausted(pid, err.message);
       }
     }
-    if (!sawConfigured && sawExhaustedConfigured) {
-      throw new Error('已設定的翻譯服務額度都已用盡，請於「設定」加入其他服務的 API Key。');
+    throw new Error(`所有翻譯服務都失敗（${failures.join('；') || '無可用服務'}）。`);
+  }
+
+  async _translateFree(text, fromId, toId, failures) {
+    try {
+      const out = await PROVIDERS[FREE_PROVIDER_ID].translate(text, fromId, toId);
+      if (this.lastUsed !== FREE_PROVIDER_ID) {
+        this.lastUsed = FREE_PROVIDER_ID;
+        this._notify();
+      }
+      return { text: out, provider: FREE_PROVIDER_ID };
+    } catch (err) {
+      failures.push(`${PROVIDERS[FREE_PROVIDER_ID].name}：${err.message}`);
+      throw new Error(`所有翻譯服務都失敗（${failures.join('；')}）。`);
     }
-    if (!sawConfigured) throw new Error('尚未設定任何翻譯 API Key，請開啟「設定」輸入。');
-    throw new Error(`所有翻譯服務都失敗或額度已用盡（${failures.join('；') || '無可用服務'}）。`);
+  }
+
+  _runtimeConfig(cfg) {
+    return {
+      azureKey: cfg.azureKey,
+      azureRegion: cfg.azureRegion,
+      googleKey: cfg.googleKey,
+      deeplKey: cfg.deeplKey,
+      deeplPlan: cfg.deeplPlan,
+      providerOrder: cfg.providerOrder,
+    };
   }
 
   // 回傳 { langId, provider }；若無法判定語言回傳 null，不中斷主流程
   async detectLanguage(text, cfg) {
+    const failures = [];
     if (cfg.useProxy) {
-      const data = await this._proxyRequest(
-        '/api/detect',
-        {
-          text,
-          runtimeConfig: {
-            azureKey: cfg.azureKey,
-            azureRegion: cfg.azureRegion,
-            googleKey: cfg.googleKey,
-            deeplKey: cfg.deeplKey,
-            deeplPlan: cfg.deeplPlan,
-            providerOrder: cfg.providerOrder,
-          },
-        },
-        cfg
-      );
-      if (!data?.langId) return null;
-      if (data.provider && this.lastUsed !== data.provider) {
-        this.lastUsed = data.provider;
-        this._notify();
+      try {
+        const data = await this._proxyRequest(
+          '/api/detect',
+          { text, runtimeConfig: this._runtimeConfig(cfg) },
+          cfg
+        );
+        if (data?.langId) {
+          if (data.provider && this.lastUsed !== data.provider) {
+            this.lastUsed = data.provider;
+            this._notify();
+          }
+          return { langId: data.langId, provider: data.provider || null };
+        }
+      } catch (err) {
+        failures.push(`Proxy：${err.message}`);
       }
-      return { langId: data.langId, provider: data.provider || null };
+      return this._detectFree(text, failures);
     }
 
-    const failures = [];
-    for (const pid of cfg.providerOrder) {
+    for (const pid of this._order(cfg)) {
       const provider = PROVIDERS[pid];
       if (!provider || !provider.isConfigured(cfg) || !provider.detectLanguage) continue;
       if (this.exhausted.has(pid)) continue;
       try {
         const providerCode = await provider.detectLanguage(text, cfg);
-        const lang = findLanguageByProviderCode(pid, providerCode);
+        const lang = findLanguageByProviderCode(pid === FREE_PROVIDER_ID ? 'google' : pid, providerCode);
         if (lang) return { langId: lang.id, provider: pid };
         failures.push(`${provider.name} 無對應語言碼 (${providerCode || 'unknown'})`);
       } catch (err) {
-        if (err instanceof QuotaError) {
-          this.exhausted.add(pid);
-          failures.push(err.message);
-          this._notify();
-          continue;
-        }
         failures.push(err.message || String(err));
+        if (err instanceof QuotaError) this._noticeExhausted(pid, err.message);
       }
     }
-    if (failures.length) {
-      console.warn('語言偵測失敗，改用目前說話者設定語言：', failures.join('；'));
+    console.warn('語言偵測失敗，改用目前說話者設定語言：', failures.join('；'));
+    return null;
+  }
+
+  async _detectFree(text, failures) {
+    try {
+      const code = await PROVIDERS[FREE_PROVIDER_ID].detectLanguage(text);
+      const lang = findLanguageByProviderCode('google', code);
+      if (lang) return { langId: lang.id, provider: FREE_PROVIDER_ID };
+      failures.push(`免費翻譯無對應語言碼 (${code || 'unknown'})`);
+    } catch (err) {
+      failures.push(err.message || String(err));
     }
+    console.warn('語言偵測失敗，改用目前說話者設定語言：', failures.join('；'));
     return null;
   }
 
   statusList(cfg) {
-    if (cfg.useProxy) {
-      return cfg.providerOrder.map((pid) => ({
-        id: pid,
-        name: PROVIDERS[pid].name,
-        configured: true,
-        exhausted: false,
-        active: this.lastUsed === pid,
-      }));
-    }
-    return cfg.providerOrder.map((pid) => ({
+    const list = cfg.providerOrder.map((pid) => ({
       id: pid,
       name: PROVIDERS[pid].name,
-      configured: PROVIDERS[pid].isConfigured(cfg),
-      exhausted: this.exhausted.has(pid),
+      configured: cfg.useProxy ? true : PROVIDERS[pid].isConfigured(cfg),
+      exhausted: cfg.useProxy ? false : this.exhausted.has(pid),
       active: this.lastUsed === pid,
     }));
+    list.push({
+      id: FREE_PROVIDER_ID,
+      name: PROVIDERS[FREE_PROVIDER_ID].name,
+      configured: true,
+      exhausted: false,
+      active: this.lastUsed === FREE_PROVIDER_ID,
+    });
+    return list;
   }
 
   // 測試單一 provider：用固定短句試譯
   async testProvider(pid, cfg) {
-    if (cfg.useProxy) {
+    if (cfg.useProxy && pid !== FREE_PROVIDER_ID) {
       const data = await this._proxyRequest(
         '/api/test',
-        {
-          provider: pid,
-          runtimeConfig: {
-            azureKey: cfg.azureKey,
-            azureRegion: cfg.azureRegion,
-            googleKey: cfg.googleKey,
-            deeplKey: cfg.deeplKey,
-            deeplPlan: cfg.deeplPlan,
-            providerOrder: cfg.providerOrder,
-          },
-        },
+        { provider: pid, runtimeConfig: this._runtimeConfig(cfg) },
         cfg
       );
       return data.text;

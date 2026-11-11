@@ -110,9 +110,9 @@ function findLanguageByProviderCode(providerId, code) {
 function providerOrder(runtimeConfig) {
   const raw = cfgValue('PROVIDER_ORDER', runtimeConfig);
   const all = ['azure', 'google', 'deepl'];
-  if (!raw) return all;
-  const picked = raw.split(',').map((s) => s.trim()).filter((s) => all.includes(s));
-  return [...picked, ...all.filter((p) => !picked.includes(p))];
+  const picked = raw ? raw.split(',').map((s) => s.trim()).filter((s) => all.includes(s)) : [];
+  // 免費 Google 翻譯永遠排最後，作為付費服務失敗或額度用盡時的備援
+  return [...picked, ...all.filter((p) => !picked.includes(p)), 'free'];
 }
 
 function deeplHost(runtimeConfig) {
@@ -125,10 +125,37 @@ function providerConfigured(pid, runtimeConfig) {
   if (pid === 'azure') return !!cfgValue('AZURE_KEY', runtimeConfig);
   if (pid === 'google') return !!cfgValue('GOOGLE_KEY', runtimeConfig);
   if (pid === 'deepl') return !!cfgValue('DEEPL_KEY', runtimeConfig);
+  if (pid === 'free') return true;
   return false;
 }
 
+async function googleFreeRequest(text, from, to) {
+  const res = await fetch('https://translate.googleapis.com/translate_a/single', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client: 'gtx', sl: from, tl: to, dt: 't', q: text }),
+  });
+  if (!res.ok) throw new Error(`免費翻譯錯誤 ${res.status}`);
+  const data = await res.json();
+  if (!Array.isArray(data?.[0])) throw new Error('免費翻譯回應格式異常');
+  return {
+    text: data[0].map((seg) => seg?.[0] || '').join(''),
+    detected: typeof data[2] === 'string' ? data[2] : null,
+  };
+}
+
 const providers = {
+  free: {
+    name: 'Google 免費翻譯',
+    async translate(text, fromId, toId) {
+      const to = providerLangCode('google', toId);
+      if (!to) throw new UnsupportedLangError('免費翻譯不支援此語言');
+      return (await googleFreeRequest(text, providerLangCode('google', fromId) || 'auto', to)).text;
+    },
+    async detectLanguage(text) {
+      return (await googleFreeRequest(text, 'auto', 'en')).detected;
+    },
+  },
   azure: {
     name: 'Azure Translator',
     async translate(text, fromId, toId, runtimeConfig) {
@@ -228,11 +255,7 @@ async function translateWithFallback(text, fromId, toId, runtimeConfig) {
         failures.push(err.message);
         continue;
       }
-      if (err instanceof UnsupportedLangError) {
-        failures.push(err.message);
-        continue;
-      }
-      throw err;
+      failures.push(err.message);
     }
   }
   throw new Error(`所有翻譯服務都失敗或額度已用盡（${failures.join('；') || '無可用服務'}）。`);
@@ -244,7 +267,7 @@ async function detectWithFallback(text, runtimeConfig) {
     if (!provider?.detectLanguage || !providerConfigured(pid, runtimeConfig) || exhausted.has(pid)) continue;
     try {
       const providerCode = await provider.detectLanguage(text, runtimeConfig);
-      const langId = findLanguageByProviderCode(pid, providerCode);
+      const langId = findLanguageByProviderCode(pid === 'free' ? 'google' : pid, providerCode);
       if (langId) return { langId, provider: pid };
     } catch (err) {
       if (err instanceof QuotaError) {

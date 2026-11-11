@@ -373,3 +373,14 @@ body {
   .party-grid { grid-template-columns: 1fr; }
   .msg { max-width: 95%; }
 }
+
+.toast {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #fff4e5;
+  color: #8a5300;
+  border: 1px solid #f0c987;
+  font-size: 0.85rem;
+}
+.toast[hidden] { display: none; }

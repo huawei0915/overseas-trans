@@ -60,6 +60,7 @@
       <span class="mic-icon">🎤</span>
       <span class="mic-label">開始對話</span>
     </button>
+    <div id="toast" class="toast" role="alert" hidden></div>
     <div class="tts-engine-row">
       <label for="tts-engine">🔊 語音引擎</label>
       <select id="tts-engine" class="lang-select" aria-label="語音播放引擎"></select>
@@ -110,7 +111,7 @@
 
       <section class="settings-group">
         <h3>翻譯服務優先順序</h3>
-        <p class="hint">額度用盡時會依序自動切換。</p>
+        <p class="hint">額度用盡時會依序自動切換；全部用盡或未設定 Key 時，會自動改用內建的「Google 免費翻譯」（不需 Key，但無額度保證）。</p>
         <ul id="provider-order" class="provider-order"></ul>
       </section>
 

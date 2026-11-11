@@ -80,6 +80,8 @@ npm run deploy:deepl-relay
 
 額度用盡（HTTP 429 / 403 / 456）時，依設定順序自動切換（預設 **Azure → Google → DeepL**）。標頭的狀態燈會顯示每家服務為「就緒 / 使用中 / 額度已盡 / 未設定」。
 
+最後一道備援是內建的 **Google 免費翻譯**（`translate.googleapis.com/translate_a/single`，不需 Key）：付費服務額度用盡（會跳出提示）、失敗或完全沒設定 Key 時，自動改用它翻譯與偵測語言。這是非官方公開端點，無額度保證，可能被限流。
+
 ## 語音引擎（播放譯文）
 
 畫面上「🔊 語音引擎」下拉選單可隨時切換，選擇會被記住：
@@ -88,6 +90,7 @@ npm run deploy:deepl-relay
 |---|---|---|---|
 | Web Speech API | 瀏覽器內建 | 全部 | 品質取決於系統語音，會自動挑選較高品質的語音 |
 | **Microsoft Edge Read Aloud**（預設） | 經 proxy 後端 | 全部 12 種 | 神經語音，品質最好；需啟動 proxy，不需 API Key |
+| Google 翻譯語音 | 直接由瀏覽器載入 `translate.google.com/translate_tts` | 全部 12 種 | 免費、不需 Key 與 proxy，需連網；非官方端點，可能被限流 |
 | Piper TTS | 瀏覽器內（WASM） | 中（簡體語音）/英/西/法/德/葡/越 | 離線可用；首次需下載語音模型（每個約數十 MB）並快取在瀏覽器 |
 | Kokoro TTS | 瀏覽器內（WASM） | 僅英文 | 離線可用；首次需下載約 90 MB 模型 |
 
@@ -104,7 +107,7 @@ js/langs.js     語言碼對照表（Web Speech ↔ Azure / Google / DeepL）
 js/config.js    localStorage 設定存取
 js/translate.js 翻譯 provider 抽象層 + 額度容錯切換
 js/stt.js       Web Speech 辨識 + 2 秒靜音自動結句
-js/tts.js       多引擎 TTS（Web Speech / Edge / Piper / Kokoro）+ 播放佇列 + 自動退回
+js/tts.js       多引擎 TTS（Web Speech / Google / Edge / Piper / Kokoro）+ 播放佇列 + 自動退回
 js/speaker.js   麥克風錄音切段 + 呼叫聲紋服務
 js/app.js       主流程串接
 diarize/server.py pyannote.audio 說話者辨識服務（/identify, /reset, /health）

@@ -5,6 +5,7 @@
 
 const TTS_ENGINE_OPTIONS = [
   { id: 'webspeech', label: 'Web Speech API（瀏覽器內建）' },
+  { id: 'google', label: 'Google 翻譯語音（免費・需連網）' },
   { id: 'edge', label: 'Microsoft Edge Read Aloud（推薦・需啟動 proxy）' },
   // { id: 'piperplus', label: 'Piper Plus（本機離線・日韓中英西法葡）' },
   { id: 'piper', label: 'Piper TTS（本機離線・中英西法德葡越）' },
@@ -50,6 +51,29 @@ const PIPER_MODULE_URL = 'https://esm.sh/@mintplex-labs/piper-tts-web@1.0.5?deps
 const KOKORO_MODULE_URL = 'https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js';
 
 const AUDIO_CACHE_LIMIT = 50;
+
+const GOOGLE_TTS_URL = 'https://translate.google.com/translate_tts';
+const GOOGLE_TTS_MAX_CHARS = 180; // 此端點單次請求約 200 字上限
+
+// 依標點切成不超過上限的片段，過長時再硬切
+function splitForGoogleTts(text) {
+  const parts = [];
+  let buf = '';
+  const push = (seg) => {
+    if (buf && buf.length + seg.length > GOOGLE_TTS_MAX_CHARS) {
+      parts.push(buf);
+      buf = '';
+    }
+    buf += seg;
+  };
+  for (const sentence of text.match(/[^。！？!?.；;，,\n]+[。！？!?.；;，,\n]*/g) || [text]) {
+    for (let i = 0; i < sentence.length; i += GOOGLE_TTS_MAX_CHARS) {
+      push(sentence.slice(i, i + GOOGLE_TTS_MAX_CHARS));
+    }
+  }
+  if (buf.trim()) parts.push(buf);
+  return parts.map((p) => p.trim()).filter(Boolean);
+}
 
 let piperModulePromise = null;
 function loadPiper() {
@@ -146,6 +170,21 @@ const TTS_ENGINES = {
         if (ctx.cancelled()) return resolve();
         speechSynthesis.speak(utterance);
       });
+    },
+  },
+
+  google: {
+    id: 'google',
+    name: 'Google 翻譯語音',
+    supports: (langId) => !!providerLangCode('google', langId),
+    async speak(text, langId, ctx) {
+      const tl = providerLangCode('google', langId);
+      // 此端點不支援 CORS fetch，只能由 <audio> 直接載入
+      for (const chunk of splitForGoogleTts(text)) {
+        if (ctx.cancelled()) return;
+        const params = new URLSearchParams({ ie: 'UTF-8', client: 'tw-ob', tl, q: chunk });
+        await ctx.playUrl(`${GOOGLE_TTS_URL}?${params}`);
+      }
     },
   },
 
@@ -293,6 +332,7 @@ class TTSPlayer {
       },
       cached: (key, producer) => this._cached(key, producer),
       playBlob: (blob) => this._playBlob(blob, gen),
+      playUrl: (url) => this._playSrc(url, gen),
     };
   }
 
@@ -307,12 +347,18 @@ class TTSPlayer {
   }
 
   _playBlob(blob, gen) {
+    return this._playSrc(URL.createObjectURL(blob), gen, true);
+  }
+
+  _playSrc(url, gen, revoke = false) {
     return new Promise((resolve, reject) => {
-      if (gen !== this.generation) return resolve();
-      const url = URL.createObjectURL(blob);
+      if (gen !== this.generation) {
+        if (revoke) URL.revokeObjectURL(url);
+        return resolve();
+      }
       const audio = new Audio(url);
       const cleanup = () => {
-        URL.revokeObjectURL(url);
+        if (revoke) URL.revokeObjectURL(url);
         if (this._cancelCurrent === cancel) this._cancelCurrent = null;
       };
       const cancel = () => {
