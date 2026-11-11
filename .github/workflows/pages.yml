@@ -29,6 +29,11 @@ jobs:
       - run: npm ci
       - run: npm run setup:offline
       - run: npm run build:pages
+        env:
+          PUBLIC_PROXY_BASE_URL: ${{ vars.PUBLIC_PROXY_BASE_URL }}
+          PUBLIC_DEEPL_RELAY_URL: ${{ vars.PUBLIC_DEEPL_RELAY_URL }}
+          PUBLIC_USE_PROXY: ${{ vars.PUBLIC_USE_PROXY }}
+          PUBLIC_AUTO_SPEAKER: ${{ vars.PUBLIC_AUTO_SPEAKER }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

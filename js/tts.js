@@ -194,7 +194,7 @@ const TTS_ENGINES = {
     supports: (langId) => !!EDGE_VOICES[langId],
     async speak(text, langId, ctx) {
       const voice = EDGE_VOICES[langId];
-      const base = String(ctx.config.proxyBaseUrl || 'http://localhost:8787').replace(/\/+$/, '');
+      const base = String(ctx.config.proxyBaseUrl || DEFAULT_CONFIG.proxyBaseUrl).replace(/\/+$/, '');
       const blob = await ctx.cached(`edge|${voice}|${text}`, async () => {
         const res = await fetch(`${base}/api/tts/edge`, {
           method: 'POST',

@@ -69,7 +69,7 @@
     <div class="speaker-auto-row">
       <label class="inline-checkbox">
         <input type="checkbox" id="auto-speaker" />
-        🧑‍🤝‍🧑 自動辨識甲/乙方（pyannote 聲紋）
+        🧑‍🤝‍🧑 自動辨識甲/乙方（聲紋，本機執行）
       </label>
       <button id="speaker-reset" class="btn btn-small" type="button">重置聲紋</button>
       <span id="speaker-status" class="tts-status" aria-live="polite"></span>
@@ -117,7 +117,7 @@
 
       <section class="settings-group">
         <h3>後端 Proxy（建議）</h3>
-        <p class="hint">在 GitHub Pages / 手機獨立使用時沒有後端：請關閉 Proxy 並直接填入 Azure 或 Google Key（DeepL 不支援瀏覽器直連，Edge 語音與聲紋辨識也需要 proxy）。</p>
+        <p class="hint">在 GitHub Pages / 手機獨立使用時沒有後端：請關閉 Proxy 並直接填入 Azure 或 Google Key（DeepL 不支援瀏覽器直連，Edge 語音也需要 proxy；聲紋辨識在瀏覽器內執行，不需要 proxy）。</p>
         <label class="inline-checkbox">
           <input type="checkbox" id="cfg-use-proxy" />
           啟用 Proxy 模式（避免 CORS 與前端外露 API Key）
@@ -179,14 +179,15 @@
     </div>
   </div>
 
-  <script src="js/langs.js?v=20261111-12"></script>
-  <script src="js/config.js?v=20261111-12"></script>
-  <script src="js/translate.js?v=20261111-12"></script>
-  <script src="js/speaker.js?v=20261111-12"></script>
-  <script src="js/stt.js?v=20261111-12"></script>
-  <script src="js/piperplus.js?v=20261111-14"></script>
-  <script src="js/tts.js?v=20261111-14"></script>
-  <script src="js/app.js?v=20261111-14"></script>
+  <script src="js/env-config.js?v=20261111-16"></script>
+  <script src="js/langs.js?v=20261111-16"></script>
+  <script src="js/config.js?v=20261111-16"></script>
+  <script src="js/translate.js?v=20261111-16"></script>
+  <script src="js/speaker.js?v=20261111-16"></script>
+  <script src="js/stt.js?v=20261111-16"></script>
+  <script src="js/piperplus.js?v=20261111-16"></script>
+  <script src="js/tts.js?v=20261111-16"></script>
+  <script src="js/app.js?v=20261111-16"></script>
   <script>
     if ('serviceWorker' in navigator && window.isSecureContext) {
       navigator.serviceWorker.register('sw.js').catch(() => {});

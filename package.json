@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "setup:offline": "node scripts/setup-offline.mjs",
+    "env:config": "node scripts/env-config.mjs",
     "build:pages": "node scripts/build-pages.mjs",
     "deploy:deepl-relay": "wrangler deploy --config cloudflare-worker/wrangler.toml",
     "start:proxy": "node proxy-server.mjs",

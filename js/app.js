@@ -1,4 +1,4 @@
-// 主流程：STT → 靜音 2 秒 → 聲紋辨識甲/乙方（pyannote）→ 容錯翻譯 → TTS 播放 → 對話紀錄
+// 主流程：STT → 靜音 2 秒 → 聲紋辨識甲/乙方（瀏覽器內 wespeaker）→ 容錯翻譯 → TTS 播放 → 對話紀錄
 (() => {
   const $ = (id) => document.getElementById(id);
 
@@ -40,11 +40,11 @@
   const tts = new TTSPlayer(() => cfg);
   const translator = new Translator();
   const recorder = new SpeakerRecorder();
-  const identifier = new SpeakerIdentifier(() => (cfg.proxyBaseUrl || 'http://localhost:8787').replace(/\/+$/, ''));
+  const identifier = new SpeakerIdentifier();
 
   const SPEAKER_PAD_MS = 1200;   // 辨識結果比實際開口晚出現，往前多取一點音訊
   const SPEAKER_PROBE_MS = 1800; // 開口後多久做一次即時說話者偵測
-  let clusterToParty = {};       // pyannote 聲紋群 → 'a' | 'b'
+  let clusterToParty = {};       // 聲紋群 → 'a' | 'b'
   let audioStartMs = 0;          // 本句音訊起點（說話者切換重啟辨識時保留）
   let probeTimer = null;
 
@@ -58,24 +58,15 @@
       setSpeakerStatus('');
       return false;
     }
-    // 後端剛啟動或網路瞬斷時第一次請求可能失敗，重試一次再判定不可用
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        await identifier.health();
-        setSpeakerStatus('聲紋服務就緒');
-        return true;
-      } catch (err) {
-        if (attempt === 0) {
-          await new Promise((r) => setTimeout(r, 800));
-          continue;
-        }
-        const hint = err instanceof TypeError
-          ? '連不到後端 proxy，請確認已執行 npm run start:proxy 與 npm run start:diarize，且「後端 proxy 網址」正確'
-          : err.message;
-        setSpeakerStatus(`聲紋服務無法使用（${hint}），已改用語言偵測`, true);
-      }
+    setSpeakerStatus('聲紋模型載入中…（首次約 26 MB）');
+    try {
+      await identifier.health();
+      setSpeakerStatus('聲紋辨識就緒（本機執行）');
+      return true;
+    } catch (err) {
+      setSpeakerStatus(`聲紋辨識無法使用（${err.message}），已改用語言偵測`, true);
+      return false;
     }
-    return false;
   }
 
   els.autoSpeaker.checked = !!cfg.autoSpeaker;
@@ -115,11 +106,11 @@
 
   async function identifyByVoice(startMs, endMs, enroll) {
     if (!cfg.autoSpeaker || !recorder.running || !startMs) return null;
-    const wav = recorder.sliceWav(startMs - SPEAKER_PAD_MS, endMs + 300);
-    if (!wav) return null;
+    const pcm = recorder.slicePcm(startMs - SPEAKER_PAD_MS, endMs + 300);
+    if (!pcm) return null;
     try {
-      const r = await identifier.identify(wav, enroll);
-      setSpeakerStatus('聲紋服務就緒');
+      const r = await identifier.identify(pcm, enroll);
+      setSpeakerStatus('聲紋辨識就緒（本機執行）');
       if (r.speaker != null) return partyForCluster(r.speaker, enroll);
       // 即時偵測時與已登錄的聲紋都不像 → 判定為另一方開口
       if (!enroll && r.similarities?.length && '0' in clusterToParty) {
@@ -574,7 +565,7 @@
     els.cfgDeeplPlan.value = cfg.deeplPlan;
     els.cfgDeeplRelay.value = cfg.deeplRelayUrl || '';
     els.cfgUseProxy.checked = !!cfg.useProxy;
-    els.cfgProxyUrl.value = cfg.proxyBaseUrl || 'http://localhost:8787';
+    els.cfgProxyUrl.value = cfg.proxyBaseUrl || DEFAULT_CONFIG.proxyBaseUrl;
     renderProviderOrder();
     els.settingsModal.classList.remove('hidden');
   }
@@ -606,7 +597,7 @@
     cfg.deeplPlan = els.cfgDeeplPlan.value;
     cfg.deeplRelayUrl = sanitizeProxyUrl(els.cfgDeeplRelay.value);
     cfg.useProxy = !!els.cfgUseProxy.checked;
-    cfg.proxyBaseUrl = sanitizeProxyUrl(els.cfgProxyUrl.value) || 'http://localhost:8787';
+    cfg.proxyBaseUrl = sanitizeProxyUrl(els.cfgProxyUrl.value) || DEFAULT_CONFIG.proxyBaseUrl;
 
     // DeepL Free key（:fx）一律走 free endpoint，避免選到 pro 造成 403
     if (cfg.deeplKey.toLowerCase().endsWith(':fx')) {

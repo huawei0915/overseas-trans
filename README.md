@@ -17,10 +17,8 @@ cp .env.example .env
 # 依需求填入 AZURE_KEY / GOOGLE_KEY / DEEPL_KEY（至少一組）
 npm run start:proxy
 
-# 1b)（選用）啟動 pyannote.audio 說話者辨識服務，自動分辨甲方／乙方（見下方「自動辨識甲方／乙方」）
-python3.11 -m venv diarize/.venv
-diarize/.venv/bin/pip install -r diarize/requirements.txt
-npm run start:diarize
+# 1b) 下載離線模型（含說話者聲紋模型，約 26 MB；聲紋辨識在瀏覽器內執行，不需要後端）
+npm run setup:offline
 
 # 2) 另開一個終端啟動前端靜態頁
 python3 -m http.server 8000
@@ -39,7 +37,7 @@ gh repo create overseas-trans --public --source=. --push
 # 網址：https://<帳號>.github.io/overseas-trans/
 ```
 
-純靜態環境沒有 proxy：預設改為「直連 API + Web Speech 播放」，請在手機的設定面板貼上 Azure 或 Google Key（只存於該手機的 localStorage，不要寫進 repo）。Edge Read Aloud 語音、pyannote 聲紋辨識需要後端，在此模式不可用。
+純靜態環境沒有 proxy：預設改為「直連 API + Web Speech 播放」，請在手機的設定面板貼上 Azure 或 Google Key（只存於該手機的 localStorage，不要寫進 repo）。Edge Read Aloud 語音需要後端，在此模式不可用；聲紋辨識在瀏覽器內執行，純靜態環境也能用。
 
 **DeepL 會出現 CORS error**（DeepL 不允許瀏覽器直連），解法擇一：
 1. 改用 Azure / Google Key（兩者支援瀏覽器直連）。
@@ -65,16 +63,30 @@ npm run deploy:deepl-relay
 8. 播放譯文時會自動暫停辨識，避免麥克風把喇叭聲音誤收進來。
 9. 對話結束時按「停止對話」。
 
-## 自動辨識甲方／乙方（pyannote.audio）
+## 自動辨識甲方／乙方（瀏覽器內聲紋）
 
-勾選畫面上的「自動辨識甲/乙方（pyannote 聲紋）」後，系統會一邊辨識語音、一邊錄下麥克風音訊，用 `pyannote/wespeaker-voxceleb-resnet34-LM`（pyannote.audio 的 speaker embedding 模型，公開模型、不需 HF token）取出每句話的聲紋並線上分群成兩位說話者，再自動：
+勾選畫面上的「自動辨識甲/乙方」後，系統會一邊辨識語音、一邊錄下麥克風音訊，用 wespeaker ResNet34-LM（與 `pyannote/wespeaker-voxceleb-resnet34-LM` 同一組權重的 ONNX 模型，`models/wespeaker/`，由 `npm run setup:offline` 下載）在**瀏覽器內以 onnxruntime-web 執行**，取出每句話的聲紋並線上分群成兩位說話者，再自動：
 
 - 判定這句話是甲方還是乙方 → 以該方語言為來源、另一方語言為譯文，自動切換翻譯方向與播放語言。
 - **第一位被辨識出的說話者歸給「當下選定的說話者」**（預設甲方；開始前點卡片可改），第二位歸給另一方。
 - 說話途中（約開口後 1.8 秒）會即時偵測是否換人，換人就立刻改用對方語言重新辨識（換人前 ~2 秒的內容會被捨棄，因為是以錯誤語言辨識的）。
-- 聲紋判錯或換了現場的人時，按「重置聲紋」重新開始；服務未啟動或失敗時自動退回原本的「語言偵測」。
+- 聲紋判錯或換了現場的人時，按「重置聲紋」重新開始；模型載入失敗時自動退回原本的「語言偵測」。
 
-設定：環境變數 `DIARIZE_THRESHOLD`（預設 0.5，餘弦相似度≥此值視為同一人）、`DIARIZE_MIN_SECONDS`（預設 1.0，過短的音訊不辨識）、`DIARIZE_PORT`（預設 8788；proxy 以 `DIARIZE_URL` 轉發）。音訊只傳到本機服務。
+全程在本機執行，音訊不會離開裝置、不需要後端或 Cloudflare。首次使用需下載約 26 MB 模型（之後由瀏覽器快取）。相似度門檻（0.5）與最短音訊長度（1 秒）在 [js/speaker.js](js/speaker.js) 的 `SPEAKER_SAME_THRESHOLD`、`SPEAKER_MIN_SECONDS`。`diarize/` 內的 pyannote Python 服務為舊版後端實作，前端已不再使用。
+
+## 前端連線設定（.env）
+
+不用寫死 IP：前端要連的網址放在 `.env` 的 `PUBLIC_*` 變數（範例見 [.env.example](.env.example)），建置時寫進 `js/env-config.js`（已加入 .gitignore）：
+
+| 變數 | 說明 |
+|---|---|
+| `PUBLIC_PROXY_BASE_URL` | 後端 proxy（含聲紋服務、Edge TTS）對外的 **https** 網址，例如 Cloudflare Tunnel 網址 |
+| `PUBLIC_DEEPL_RELAY_URL` | DeepL 中繼（Cloudflare Worker）網址 |
+| `PUBLIC_USE_PROXY` / `PUBLIC_AUTO_SPEAKER` | 選填 `true`/`false`，預設有後端網址時為 `true` |
+
+- 本機：改完 `.env` 執行 `npm run env:config`，重新整理頁面。
+- GitHub Pages：到 repo **Settings → Secrets and variables → Actions → Variables** 設定同名變數，推送後由 workflow 建置時帶入。
+- 注意：Cloudflare Worker（`deepl-relay`）只轉發 DeepL，**無法執行 Edge TTS**；需要的話請自己的電腦/主機跑 `npm run start:proxy`，再用 `cloudflared tunnel --url http://localhost:8787` 之類的方式取得 https 網址填入 `PUBLIC_PROXY_BASE_URL`（https 頁面不能連 http 後端）。
 
 ## 自動容錯
 
@@ -108,9 +120,9 @@ js/config.js    localStorage 設定存取
 js/translate.js 翻譯 provider 抽象層 + 額度容錯切換
 js/stt.js       Web Speech 辨識 + 2 秒靜音自動結句
 js/tts.js       多引擎 TTS（Web Speech / Google / Edge / Piper / Kokoro）+ 播放佇列 + 自動退回
-js/speaker.js   麥克風錄音切段 + 呼叫聲紋服務
+js/speaker.js   麥克風錄音切段 + 瀏覽器內聲紋擷取（fbank + ONNX）與線上分群
 js/app.js       主流程串接
-diarize/server.py pyannote.audio 說話者辨識服務（/identify, /reset, /health）
+models/wespeaker/ 聲紋 ONNX 模型（由 setup:offline 下載）；diarize/server.py 為舊版 pyannote 後端（前端已不使用）
 proxy-server.mjs 後端 Proxy（/api/translate, /api/detect, /api/test, /api/tts/edge, /api/speaker/*）
 ```
 

@@ -5,27 +5,52 @@ const CONFIG_STORAGE_KEY = 'overseas-trans-config';
 // 部署在 GitHub Pages 等純靜態環境時，預設改用瀏覽器直連 API 與不需後端的語音引擎。
 const HAS_BACKEND = /^(localhost|127\.0\.0\.1|\[::1\]|(10|192\.168)\.[\d.]+|172\.(1[6-9]|2\d|3[01])\.[\d.]+)$/.test(location.hostname);
 
+// 由 .env 的 PUBLIC_* 變數經 npm run env:config / build:pages 產生（js/env-config.js），缺檔時為空
+const APP_ENV = window.APP_ENV || {};
+const ENV_PROXY_URL = String(APP_ENV.proxyBaseUrl || '').replace(/\/+$/, '');
+const HAS_PROXY = HAS_BACKEND || !!ENV_PROXY_URL;
+const isLoopbackHost = (h) => h === 'localhost' || h === '127.0.0.1' || h === '[::1]';
+
 const DEFAULT_CONFIG = {
   azureKey: '',
   azureRegion: 'southeastasia',
   googleKey: '',
   deeplKey: '',
   deeplPlan: 'free', // 'free' | 'pro'
-  deeplRelayUrl: '', // 純靜態部署時，DeepL 需經由此中繼 URL（見 cloudflare-worker/）
+  deeplRelayUrl: APP_ENV.deeplRelayUrl || '', // 純靜態部署時，DeepL 需經由此中繼 URL（見 cloudflare-worker/）
   providerOrder: ['azure', 'google', 'deepl'],
-  useProxy: HAS_BACKEND,
-  proxyBaseUrl: HAS_BACKEND ? `http://${location.hostname}:8787` : 'http://localhost:8787',
-  ttsEngine: HAS_BACKEND ? 'edge' : 'webspeech', // 'webspeech' | 'edge' | 'piper' | 'kokoro'
+  useProxy: APP_ENV.useProxy ?? HAS_PROXY,
+  proxyBaseUrl: ENV_PROXY_URL || (HAS_BACKEND ? `http://${location.hostname}:8787` : 'http://localhost:8787'),
+  ttsEngine: HAS_PROXY ? 'edge' : 'webspeech', // 'webspeech' | 'edge' | 'piper' | 'kokoro'
   langA: 'zh-TW',
   langB: 'en',
-  autoSpeaker: HAS_BACKEND, // 以 pyannote.audio 聲紋自動分辨甲/乙方
+  autoSpeaker: APP_ENV.autoSpeaker ?? true, // 以 wespeaker 聲紋（瀏覽器內執行）自動分辨甲/乙方
 };
+
+// 存在設定裡的 localhost 在手機等其他裝置上會指向裝置自己：
+// 有 .env 指定的後端網址就改用它，否則（區網使用）改指向提供頁面的主機
+function applyEnvFixes(cfg) {
+  if (!cfg.deeplRelayUrl && APP_ENV.deeplRelayUrl) cfg.deeplRelayUrl = APP_ENV.deeplRelayUrl;
+  try {
+    const u = new URL(cfg.proxyBaseUrl);
+    if (!isLoopbackHost(u.hostname) || isLoopbackHost(location.hostname)) return cfg;
+    if (ENV_PROXY_URL) {
+      cfg.proxyBaseUrl = ENV_PROXY_URL;
+    } else if (HAS_BACKEND) {
+      u.hostname = location.hostname;
+      cfg.proxyBaseUrl = u.origin;
+    }
+  } catch {
+    // 網址格式無效時維持原值
+  }
+  return cfg;
+}
 
 const AppConfig = {
   load() {
     try {
       const raw = localStorage.getItem(CONFIG_STORAGE_KEY);
-      if (!raw) return { ...DEFAULT_CONFIG };
+      if (!raw) return applyEnvFixes({ ...DEFAULT_CONFIG });
       const parsed = JSON.parse(raw);
       const cfg = { ...DEFAULT_CONFIG, ...parsed };
       // 確保 providerOrder 合法且包含全部 provider
@@ -33,9 +58,9 @@ const AppConfig = {
       cfg.providerOrder = Array.isArray(cfg.providerOrder)
         ? [...cfg.providerOrder.filter((p) => all.includes(p)), ...all.filter((p) => !cfg.providerOrder.includes(p))]
         : [...all];
-      return cfg;
+      return applyEnvFixes(cfg);
     } catch {
-      return { ...DEFAULT_CONFIG };
+      return applyEnvFixes({ ...DEFAULT_CONFIG });
     }
   },
 
