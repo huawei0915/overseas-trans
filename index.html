@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>雙向即時語音翻譯</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <h1>🌐 雙向即時語音翻譯</h1>
+    <div class="header-right">
+      <div id="provider-status" class="provider-status" title="翻譯服務狀態"></div>
+      <button id="btn-settings" class="btn btn-ghost">⚙️ 設定</button>
+    </div>
+  </header>
+
+  <div id="browser-warning" class="banner banner-warn hidden">
+    此瀏覽器不支援語音辨識（Web Speech API）。請使用 <strong>Chrome</strong> 或 <strong>Edge</strong>，並於本機 localhost 或 HTTPS 環境開啟。
+  </div>
+  <div id="mic-warning" class="banner banner-error hidden">
+    無法取得麥克風權限。請在瀏覽器網址列左側允許麥克風存取後重試。
+  </div>
+
+  <main class="party-grid">
+    <section class="party-card" id="party-a" role="button" tabindex="0" aria-label="切換為甲方說話">
+      <div class="party-head">
+        <span class="party-badge badge-a">甲方</span>
+        <select id="lang-a" class="lang-select" aria-label="甲方語言"></select>
+      </div>
+      <p class="party-hint">點此切換為甲方說話</p>
+    </section>
+
+    <section class="party-card" id="party-b" role="button" tabindex="0" aria-label="切換為乙方說話">
+      <div class="party-head">
+        <span class="party-badge badge-b">乙方</span>
+        <select id="lang-b" class="lang-select" aria-label="乙方語言"></select>
+      </div>
+      <p class="party-hint">點此切換為乙方說話</p>
+    </section>
+  </main>
+
+  <section class="control-bar">
+    <button id="mic-master" class="mic-btn master" type="button">
+      <span class="mic-icon">🎤</span>
+      <span class="mic-label">開始對話</span>
+    </button>
+    <div class="interim-wrap">
+      <div id="speaker-indicator" class="speaker-indicator">目前說話者：甲方</div>
+      <div id="interim" class="interim-bubble" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <div id="tts-indicator" class="tts-indicator hidden">🔊 播放翻譯中…</div>
+
+  <section class="transcript-section">
+    <div class="transcript-head">
+      <h2>對話紀錄</h2>
+      <button id="clear-transcript" class="btn btn-small btn-danger" type="button">清除對話</button>
+    </div>
+    <div id="transcript" class="transcript">
+      <p class="transcript-empty">尚無對話。按下「開始對話」後即可持續說話，停頓 5 秒會自動翻譯並播放，直到按下「停止對話」為止。</p>
+    </div>
+  </section>
+
+  <section class="manual-input-section">
+    <h2>文字測試輸入（檢查用）</h2>
+    <div class="manual-input-row">
+      <input id="manual-text" type="text" placeholder="直接輸入文字，按 Enter 或送出測試翻譯…" />
+      <button id="manual-send" class="btn btn-primary" type="button">送出</button>
+    </div>
+    <p class="hint">會以「目前說話者」語言送出，並套用相同翻譯/語音播放流程。</p>
+  </section>
+
+  <!-- 設定面板 -->
+  <div id="settings-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>設定</h2>
+        <button id="btn-close-settings" class="btn btn-ghost">✕</button>
+      </div>
+
+      <section class="settings-group">
+        <h3>翻譯服務優先順序</h3>
+        <p class="hint">額度用盡時會依序自動切換。</p>
+        <ul id="provider-order" class="provider-order"></ul>
+      </section>
+
+      <section class="settings-group">
+        <h3>後端 Proxy（建議）</h3>
+        <label class="inline-checkbox">
+          <input type="checkbox" id="cfg-use-proxy" />
+          啟用 Proxy 模式（避免 CORS 與前端外露 API Key）
+        </label>
+        <label>Proxy Base URL
+          <input type="text" id="cfg-proxy-url" placeholder="http://localhost:8787" autocomplete="off" />
+        </label>
+      </section>
+
+      <section class="settings-group">
+        <h3>Microsoft Azure Translator</h3>
+        <label>Subscription Key
+          <input type="password" id="cfg-azure-key" autocomplete="off" />
+        </label>
+        <label>Region（例如 eastasia、southeastasia）
+          <input type="text" id="cfg-azure-region" placeholder="southeastasia" autocomplete="off" />
+        </label>
+        <div class="test-row">
+          <button class="btn btn-small" data-test="azure">測試連線</button>
+          <span id="test-azure" class="test-result"></span>
+        </div>
+      </section>
+
+      <section class="settings-group">
+        <h3>Google Cloud Translation</h3>
+        <label>API Key
+          <input type="password" id="cfg-google-key" autocomplete="off" />
+        </label>
+        <div class="test-row">
+          <button class="btn btn-small" data-test="google">測試連線</button>
+          <span id="test-google" class="test-result"></span>
+        </div>
+      </section>
+
+      <section class="settings-group">
+        <h3>DeepL</h3>
+        <label>Auth Key
+          <input type="password" id="cfg-deepl-key" autocomplete="off" />
+        </label>
+        <label>方案
+          <select id="cfg-deepl-plan">
+            <option value="free">Free（api-free.deepl.com）</option>
+            <option value="pro">Pro（api.deepl.com）</option>
+          </select>
+        </label>
+        <div class="test-row">
+          <button class="btn btn-small" data-test="deepl">測試連線</button>
+          <span id="test-deepl" class="test-result"></span>
+        </div>
+      </section>
+
+      <div class="modal-foot">
+        <span class="hint">Key 僅儲存在此瀏覽器的 localStorage。</span>
+        <button id="btn-save-settings" class="btn btn-primary">儲存</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/langs.js?v=20261111-8"></script>
+  <script src="js/config.js?v=20261111-8"></script>
+  <script src="js/translate.js?v=20261111-8"></script>
+  <script src="js/stt.js?v=20261111-8"></script>
+  <script src="js/tts.js?v=20261111-8"></script>
+  <script src="js/app.js?v=20261111-8"></script>
+</body>
+</html>
