@@ -106,7 +106,9 @@ const PROVIDERS = {
     async translate(text, fromId, toId, cfg) {
       const to = providerLangCode('deepl', toId);
       if (!to) throw new UnsupportedLangError('DeepL 不支援此語言');
-      const host = resolveDeepLHost(cfg);
+      // DeepL 不支援瀏覽器 CORS：有設定中繼（Cloudflare Worker）時改走中繼，由它依 Key 決定 free/pro
+      const relay = String(cfg.deeplRelayUrl || '').trim().replace(/\/+$/, '');
+      const host = relay || resolveDeepLHost(cfg);
       const res = await fetch(`${host}/v2/translate`, {
         method: 'POST',
         headers: {

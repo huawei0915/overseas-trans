@@ -39,7 +39,19 @@ gh repo create overseas-trans --public --source=. --push
 # 網址：https://<帳號>.github.io/overseas-trans/
 ```
 
-純靜態環境沒有 proxy：預設改為「直連 API + Web Speech 播放」，請在手機的設定面板貼上 Azure 或 Google Key（只存於該手機的 localStorage，不要寫進 repo）。DeepL、Edge Read Aloud 語音、pyannote 聲紋辨識需要後端，在此模式不可用。
+純靜態環境沒有 proxy：預設改為「直連 API + Web Speech 播放」，請在手機的設定面板貼上 Azure 或 Google Key（只存於該手機的 localStorage，不要寫進 repo）。Edge Read Aloud 語音、pyannote 聲紋辨識需要後端，在此模式不可用。
+
+**DeepL 會出現 CORS error**（DeepL 不允許瀏覽器直連），解法擇一：
+1. 改用 Azure / Google Key（兩者支援瀏覽器直連）。
+2. 部署免費的 Cloudflare Worker 當中繼：到 Cloudflare Dashboard → Workers & Pages → Create → Hello World，貼上 [cloudflare-worker/deepl-relay.js](cloudflare-worker/deepl-relay.js) 後 Deploy；或用本專案一鍵部署：
+
+```bash
+npm install
+npx wrangler login
+npm run deploy:deepl-relay
+```
+
+成功後會得到 `https://overseas-trans-deepl-relay.<子網域>.workers.dev`。把這個網址填進設定面板的「DeepL 中繼 URL」即可。Worker 內的 `ALLOWED_ORIGINS` 預設只允許 `https://huawei0915.github.io`，網域不同請修改。
 
 ## 使用方式
 

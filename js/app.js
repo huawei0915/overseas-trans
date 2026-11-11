@@ -30,6 +30,7 @@
     cfgGoogleKey: $('cfg-google-key'),
     cfgDeeplKey: $('cfg-deepl-key'),
     cfgDeeplPlan: $('cfg-deepl-plan'),
+    cfgDeeplRelay: $('cfg-deepl-relay'),
     cfgUseProxy: $('cfg-use-proxy'),
     cfgProxyUrl: $('cfg-proxy-url'),
   };
@@ -552,6 +553,7 @@
     els.cfgGoogleKey.value = cfg.googleKey;
     els.cfgDeeplKey.value = cfg.deeplKey;
     els.cfgDeeplPlan.value = cfg.deeplPlan;
+    els.cfgDeeplRelay.value = cfg.deeplRelayUrl || '';
     els.cfgUseProxy.checked = !!cfg.useProxy;
     els.cfgProxyUrl.value = cfg.proxyBaseUrl || 'http://localhost:8787';
     renderProviderOrder();
@@ -583,6 +585,7 @@
     cfg.googleKey = sanitizeApiKey(els.cfgGoogleKey.value);
     cfg.deeplKey = sanitizeApiKey(els.cfgDeeplKey.value);
     cfg.deeplPlan = els.cfgDeeplPlan.value;
+    cfg.deeplRelayUrl = sanitizeProxyUrl(els.cfgDeeplRelay.value);
     cfg.useProxy = !!els.cfgUseProxy.checked;
     cfg.proxyBaseUrl = sanitizeProxyUrl(els.cfgProxyUrl.value) || 'http://localhost:8787';
 

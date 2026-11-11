@@ -6,8 +6,12 @@
   "scripts": {
     "setup:offline": "node scripts/setup-offline.mjs",
     "build:pages": "node scripts/build-pages.mjs",
+    "deploy:deepl-relay": "wrangler deploy --config cloudflare-worker/wrangler.toml",
     "start:proxy": "node proxy-server.mjs",
     "start:diarize": "diarize/.venv/bin/python diarize/server.py"
+  },
+  "devDependencies": {
+    "wrangler": "^4.160.0"
   },
   "dependencies": {
     "msedge-tts": "^2.1.1",

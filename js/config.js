@@ -11,6 +11,7 @@ const DEFAULT_CONFIG = {
   googleKey: '',
   deeplKey: '',
   deeplPlan: 'free', // 'free' | 'pro'
+  deeplRelayUrl: '', // 純靜態部署時，DeepL 需經由此中繼 URL（見 cloudflare-worker/）
   providerOrder: ['azure', 'google', 'deepl'],
   useProxy: HAS_BACKEND,
   proxyBaseUrl: 'http://localhost:8787',
