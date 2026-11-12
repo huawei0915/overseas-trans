@@ -72,6 +72,7 @@
   els.autoSpeaker.checked = !!cfg.autoSpeaker;
   els.autoSpeaker.addEventListener('change', () => {
     cfg.autoSpeaker = els.autoSpeaker.checked;
+    cfg.autoSpeakerChosen = true;
     AppConfig.save(cfg);
     if (sessionActive) {
       if (cfg.autoSpeaker) void startSpeakerRecorder();
@@ -85,6 +86,14 @@
     audioStartMs = 0;
     setSpeakerStatus('已重置聲紋，下一句會重新判定甲/乙方');
   });
+
+  function disableSpeakerForSession(message) {
+    recorder.stop();
+    cfg.autoSpeaker = false;
+    els.autoSpeaker.checked = false;
+    setSpeakerStatus(message, true);
+    if (sessionActive) restartRecognition();
+  }
 
   async function startSpeakerRecorder() {
     try {
@@ -435,6 +444,11 @@
           setMicWarning('麥克風權限被拒絕。請點網址列左側圖示允許麥克風後重試。');
           sessionActive = false;
           updateMicUI();
+          return;
+        }
+        if (recorder.running && (code === 'audio-capture' || code === 'aborted')) {
+          // 聲紋錄音與語音辨識搶同一支麥克風：放棄聲紋，保住語音轉文字
+          disableSpeakerForSession('麥克風無法同時給語音辨識與聲紋錄音使用，已關閉聲紋辨識、改用語言偵測');
           return;
         }
         if (code === 'audio-capture') {
