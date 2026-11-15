@@ -20,7 +20,9 @@ function copy(rel, filter) {
   fs.cpSync(src, path.join(out, rel), { recursive: true, filter });
 }
 
-for (const rel of ['index.html', 'manifest.webmanifest', 'sw.js', 'css', 'js', 'icons', 'models']) copy(rel);
+for (const rel of ['index.html', 'manifest.webmanifest', 'sw.js', 'css', 'js', 'icons']) copy(rel);
+// 聲紋模型只給後端（diarize/server.py）用，不放進靜態網站
+copy('models', (src) => !src.includes(`${path.sep}wespeaker`));
 fs.writeFileSync(path.join(out, '.nojekyll'), '');
 
 copy('node_modules/piper-plus', (src) => !/\.(md|map)$/.test(src));

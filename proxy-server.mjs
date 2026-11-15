@@ -309,11 +309,11 @@ async function readRawBody(req, limit) {
   return Buffer.concat(chunks);
 }
 
-// 轉發到 pyannote 說話者辨識服務（diarize/server.py）
+// 轉發到語音辨識 + 說話者辨識服務（diarize/server.py）
 async function forwardSpeaker(req, res) {
   const { pathname, search } = new URL(req.url, 'http://localhost');
   const target = pathname.replace(/^\/api\/speaker/, '');
-  if (!['/health', '/identify', '/reset'].includes(target)) return sendJson(res, 404, { error: 'Not found' });
+  if (!['/health', '/transcribe', '/identify', '/reset'].includes(target)) return sendJson(res, 404, { error: 'Not found' });
   try {
     const init = { method: req.method };
     if (req.method === 'POST') {

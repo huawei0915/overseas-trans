@@ -1,23 +1,52 @@
-// 說話者辨識前端：錄下麥克風音訊，依時間切出每句語音，在瀏覽器內以 wespeaker ResNet34（ONNX，onnxruntime-web）
-// 取出聲紋並線上分群成甲/乙兩位說話者。全程在本機執行，音訊不會離開裝置，不需要任何後端。
-// Web Speech API 拿不到原始音訊，因此另開一路 getUserMedia 錄音，與辨識並行。
+// 伺服器端語音辨識 + 說話者辨識的前端：
+// 只用「一路」麥克風錄音（不使用 Web Speech，所以手機上不會有兩個程式搶麥克風而一直停在「聆聽中」），
+// 在瀏覽器內以音量切出每一句（靜音 1 秒結句），把整句音訊傳給後端（diarize/server.py）
+// 由後端轉文字並以 wespeaker 聲紋分群出甲/乙方。瀏覽器本身不做任何模型運算。
 
-const SPEAKER_TARGET_RATE = 16000;
-const SPEAKER_BUFFER_MS = 60000;
+const VOICE_TARGET_RATE = 16000;
+const VOICE_SILENCE_MS = 1000;      // 靜音多久視為一句結束
+const VOICE_MIN_VOICED_MS = 400;    // 有聲時間不足視為雜音，丟棄
+const VOICE_MAX_UTTERANCE_MS = 25000;
+const VOICE_PREROLL_CHUNKS = 4;     // 開口前多保留幾塊音訊，避免吃掉字首
+const VOICE_START_RMS = 0.015;
+const VOICE_KEEP_RMS = 0.008;
 
-class SpeakerRecorder {
+class VoiceListener {
   constructor() {
     this.ctx = null;
     this.stream = null;
     this.node = null;
     this.source = null;
-    this.chunks = []; // { endMs, rate, data: Float32Array }
     this.running = false;
+    this.paused = false;
     this.starting = null;
-    this.lastVoiceMs = 0; // 最近一次錄到明顯人聲音量的時間（app.js 看門狗用）
+    this.callbacks = {};
+    this._resetState();
+    this.noiseFloor = 0;
   }
 
-  start() {
+  _resetState() {
+    this.preroll = [];
+    this.parts = [];
+    this.speaking = false;
+    this.voicedRun = 0;
+    this.voicedMs = 0;
+    this.silentMs = 0;
+    this.totalMs = 0;
+    this.startMs = 0;
+  }
+
+  // 必須在使用者點擊的事件處理器內「同步」呼叫：iOS Safari 只允許在手勢中建立/啟動 AudioContext
+  prepare() {
+    if (this.ctx) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    this.ctx = new AC();
+    if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
+  }
+
+  start(callbacks) {
+    this.callbacks = callbacks || {};
     this.starting ??= this._start().finally(() => { this.starting = null; });
     return this.starting;
   }
@@ -25,85 +54,123 @@ class SpeakerRecorder {
   async _start() {
     if (this.running) return;
     try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('此瀏覽器不支援麥克風（需 HTTPS 網址）');
+      this.prepare();
+      if (!this.ctx) throw new Error('此瀏覽器不支援 Web Audio');
       this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
-      const AC = window.AudioContext || window.webkitAudioContext;
-      this.ctx = new AC();
+      // resume() 在被瀏覽器阻擋時可能永遠不 resolve，限時等待，由下方活檢明確報錯
+      if (this.ctx.state === 'suspended') await Promise.race([this.ctx.resume().catch(() => {}), new Promise((r) => setTimeout(r, 1500))]);
       this.source = this.ctx.createMediaStreamSource(this.stream);
       this.node = this.ctx.createScriptProcessor(4096, 1, 1);
+      let chunkCount = 0;
       this.node.onaudioprocess = (e) => {
-        const data = new Float32Array(e.inputBuffer.getChannelData(0));
-        const now = Date.now();
-        this.chunks.push({ endMs: now, rate: this.ctx.sampleRate, data });
-        const cutoff = now - SPEAKER_BUFFER_MS;
-        while (this.chunks.length && this.chunks[0].endMs < cutoff) this.chunks.shift();
-        let peak = 0;
-        for (let i = 0; i < data.length; i += 8) {
-          const a = data[i] < 0 ? -data[i] : data[i];
-          if (a > peak) peak = a;
-        }
-        if (peak > 0.02) this.lastVoiceMs = now;
+        chunkCount++;
+        this._onChunk(new Float32Array(e.inputBuffer.getChannelData(0)), this.ctx.sampleRate);
       };
       this.source.connect(this.node);
       this.node.connect(this.ctx.destination); // ScriptProcessor 需連到輸出才會觸發；輸出為靜音
       this.running = true;
-      // 部分瀏覽器（Safari、行動版）的 AudioContext 需要在使用者手勢後 resume，
-      // 否則永遠停在 suspended、onaudioprocess 不會觸發，等於悄悄錄不到任何聲音
-      if (this.ctx.state === 'suspended') {
-        try { await this.ctx.resume(); } catch { /* 由下方的活檢接手 */ }
-      }
+      this.paused = false;
+      this._resetState();
       // 活檢：確認真的有音訊流進來，失敗就明確報錯而不是靜靜沒反應
       await new Promise((resolve, reject) => {
         setTimeout(() => {
-          if (!this.running || this.chunks.length) resolve();
+          if (chunkCount) resolve();
           else reject(new Error('麥克風錄音未啟動（音訊處理被瀏覽器暫停）'));
-        }, 800);
+        }, 1000);
       });
     } catch (err) {
-      this.stop();
+      this.stop(false);
       throw err;
     }
   }
 
-  stop() {
+  _onChunk(data, rate) {
+    if (!this.running || this.paused) return;
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+    const rms = Math.sqrt(sum / data.length);
+    const dur = (data.length / rate) * 1000;
+    const chunk = { data, rate };
+    this.totalMs += dur;
+
+    if (!this.speaking) {
+      this.noiseFloor = this.noiseFloor ? this.noiseFloor * 0.95 + rms * 0.05 : rms;
+      const startThr = Math.max(VOICE_START_RMS, this.noiseFloor * 3);
+      this.preroll.push(chunk);
+      if (this.preroll.length > VOICE_PREROLL_CHUNKS) this.preroll.shift();
+      this.voicedRun = rms > startThr ? this.voicedRun + 1 : 0;
+      if (this.voicedRun >= 2) {
+        this.speaking = true;
+        this.parts = [...this.preroll];
+        this.preroll = [];
+        this.voicedMs = dur * this.voicedRun;
+        this.silentMs = 0;
+        this.startMs = Date.now() - this.parts.reduce((n, c) => n + (c.data.length / c.rate) * 1000, 0);
+        this.callbacks.onSpeechStart?.();
+      }
+      return;
+    }
+
+    this.parts.push(chunk);
+    const keepThr = Math.max(VOICE_KEEP_RMS, this.noiseFloor * 1.8);
+    if (rms > keepThr) {
+      this.voicedMs += dur;
+      this.silentMs = 0;
+    } else {
+      this.silentMs += dur;
+    }
+    const lengthMs = this.parts.reduce((n, c) => n + (c.data.length / c.rate) * 1000, 0);
+    if (this.silentMs >= VOICE_SILENCE_MS || lengthMs >= VOICE_MAX_UTTERANCE_MS) this._finalize();
+  }
+
+  _finalize() {
+    const parts = this.parts;
+    const voicedMs = this.voicedMs;
+    const startMs = this.startMs;
+    this._resetState();
+    if (voicedMs < VOICE_MIN_VOICED_MS || !parts.length) {
+      this.callbacks.onDiscard?.();
+      return;
+    }
+    const total = parts.reduce((n, c) => n + c.data.length, 0);
+    const merged = new Float32Array(total);
+    let off = 0;
+    for (const c of parts) { merged.set(c.data, off); off += c.data.length; }
+    const pcm = voiceDownsample(merged, parts[0].rate, VOICE_TARGET_RATE);
+    this.callbacks.onUtterance?.(pcm, { startMs, endMs: Date.now() });
+  }
+
+  // 播放譯文期間暫停收音並丟棄暫存，避免把喇叭聲音辨識進來
+  pause() {
+    this.paused = true;
+    this._resetState();
+  }
+
+  resume() {
+    if (!this.paused) return;
+    this._resetState();
+    this.paused = false;
+  }
+
+  // flush：結束時把說到一半的那一句送出
+  stop(flush = true) {
+    if (flush && this.running && this.speaking) this._finalize();
     this.running = false;
+    this.paused = false;
     try { this.node?.disconnect(); } catch { /* ignore */ }
     try { this.source?.disconnect(); } catch { /* ignore */ }
+    if (this.node) this.node.onaudioprocess = null;
     this.stream?.getTracks().forEach((t) => t.stop());
     this.ctx?.close().catch(() => {});
     this.node = this.source = this.stream = this.ctx = null;
-    this.chunks = [];
-    this.lastVoiceMs = 0;
-  }
-
-  // 丟棄目前已錄的音訊（播放譯文期間錄到的喇叭聲不應拿去辨識）
-  clear() {
-    this.chunks = [];
-    this.lastVoiceMs = 0;
-  }
-
-  // 取 [startMs, endMs] 的音訊，轉成 16 kHz mono Float32；沒有音訊時回傳 null
-  slicePcm(startMs, endMs) {
-    const parts = [];
-    let rate = 0;
-    for (const c of this.chunks) {
-      const dur = (c.data.length / c.rate) * 1000;
-      const cStart = c.endMs - dur;
-      if (c.endMs < startMs || cStart > endMs) continue;
-      parts.push(c.data);
-      rate = c.rate;
-    }
-    if (!parts.length) return null;
-    const total = parts.reduce((n, p) => n + p.length, 0);
-    const merged = new Float32Array(total);
-    let off = 0;
-    for (const p of parts) { merged.set(p, off); off += p.length; }
-    return downsample(merged, rate, SPEAKER_TARGET_RATE);
+    this._resetState();
   }
 }
 
-function downsample(input, fromRate, toRate) {
+function voiceDownsample(input, fromRate, toRate) {
   if (fromRate === toRate) return input;
   const ratio = fromRate / toRate;
   const out = new Float32Array(Math.floor(input.length / ratio));
@@ -118,219 +185,94 @@ function downsample(input, fromRate, toRate) {
   return out;
 }
 
-// ---------- 特徵擷取：與 torchaudio.compliance.kaldi.fbank（wespeaker 設定）等價 ----------
-
-const FBANK = { rate: SPEAKER_TARGET_RATE, frameLen: 400, frameShift: 160, nfft: 512, bins: 80, lowFreq: 20, preemph: 0.97 };
-const FBANK_EPS = 1.1920929e-7;
-
-const fbankWindow = Float32Array.from({ length: FBANK.frameLen }, (_, i) => 0.54 - 0.46 * Math.cos((2 * Math.PI * i) / (FBANK.frameLen - 1)));
-
-const fbankMelBanks = (() => {
-  const mel = (f) => 1127 * Math.log(1 + f / 700);
-  const nBins = FBANK.nfft / 2;
-  const binWidth = FBANK.rate / FBANK.nfft;
-  const melLow = mel(FBANK.lowFreq);
-  const melHigh = mel(FBANK.rate / 2);
-  const delta = (melHigh - melLow) / (FBANK.bins + 1);
-  return Array.from({ length: FBANK.bins }, (_, b) => {
-    const left = melLow + b * delta;
-    const center = melLow + (b + 1) * delta;
-    const right = melLow + (b + 2) * delta;
-    const weights = new Float32Array(nBins + 1); // 最後一格（Nyquist）固定為 0
-    for (let k = 0; k < nBins; k++) {
-      const m = mel(binWidth * k);
-      weights[k] = Math.max(0, Math.min((m - left) / (center - left), (right - m) / (right - center)));
-    }
-    return weights;
-  });
-})();
-
-const fftTwiddle = (() => {
-  const n = FBANK.nfft;
-  const cos = new Float32Array(n / 2);
-  const sin = new Float32Array(n / 2);
-  for (let i = 0; i < n / 2; i++) {
-    cos[i] = Math.cos((-2 * Math.PI * i) / n);
-    sin[i] = Math.sin((-2 * Math.PI * i) / n);
+function pcmToWav(pcm, rate = VOICE_TARGET_RATE) {
+  const buf = new ArrayBuffer(44 + pcm.length * 2);
+  const v = new DataView(buf);
+  const str = (off, s) => { for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i)); };
+  str(0, 'RIFF');
+  v.setUint32(4, 36 + pcm.length * 2, true);
+  str(8, 'WAVEfmt ');
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);   // PCM
+  v.setUint16(22, 1, true);   // mono
+  v.setUint32(24, rate, true);
+  v.setUint32(28, rate * 2, true);
+  v.setUint16(32, 2, true);
+  v.setUint16(34, 16, true);
+  str(36, 'data');
+  v.setUint32(40, pcm.length * 2, true);
+  for (let i = 0; i < pcm.length; i++) {
+    const s = Math.max(-1, Math.min(1, pcm[i]));
+    v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
   }
-  return { cos, sin };
-})();
-
-// 原地 radix-2 FFT（長度 FBANK.nfft）
-function fftInPlace(re, im) {
-  const n = re.length;
-  for (let i = 1, j = 0; i < n; i++) {
-    let bit = n >> 1;
-    for (; j & bit; bit >>= 1) j ^= bit;
-    j ^= bit;
-    if (i < j) {
-      [re[i], re[j]] = [re[j], re[i]];
-      [im[i], im[j]] = [im[j], im[i]];
-    }
-  }
-  for (let len = 2; len <= n; len <<= 1) {
-    const half = len >> 1;
-    const step = n / len;
-    for (let i = 0; i < n; i += len) {
-      for (let k = 0; k < half; k++) {
-        const wr = fftTwiddle.cos[k * step];
-        const wi = fftTwiddle.sin[k * step];
-        const a = i + k;
-        const b = a + half;
-        const tr = re[b] * wr - im[b] * wi;
-        const ti = re[b] * wi + im[b] * wr;
-        re[b] = re[a] - tr;
-        im[b] = im[a] - ti;
-        re[a] += tr;
-        im[a] += ti;
-      }
-    }
-  }
+  return buf;
 }
 
-// samples：16 kHz mono，範圍 [-1, 1]。回傳 { data: Float32Array(frames * 80), frames }，已做整段平均值正規化
-function computeFbank(samples) {
-  const frames = Math.floor((samples.length - FBANK.frameLen) / FBANK.frameShift) + 1;
-  if (frames < 1) return null;
-  const data = new Float32Array(frames * FBANK.bins);
-  const re = new Float32Array(FBANK.nfft);
-  const im = new Float32Array(FBANK.nfft);
-  const frame = new Float32Array(FBANK.frameLen);
-  const half = FBANK.nfft / 2;
-  const power = new Float32Array(half + 1);
+// ---------- 後端 API（經由 proxy 的 /api/speaker/*）----------
 
-  for (let t = 0; t < frames; t++) {
-    const off = t * FBANK.frameShift;
-    let mean = 0;
-    for (let i = 0; i < FBANK.frameLen; i++) {
-      frame[i] = samples[off + i] * 32768;
-      mean += frame[i];
-    }
-    mean /= FBANK.frameLen;
-    for (let i = 0; i < FBANK.frameLen; i++) frame[i] -= mean;
-    re.fill(0);
-    im.fill(0);
-    re[0] = (frame[0] - FBANK.preemph * frame[0]) * fbankWindow[0];
-    for (let i = 1; i < FBANK.frameLen; i++) re[i] = (frame[i] - FBANK.preemph * frame[i - 1]) * fbankWindow[i];
-    fftInPlace(re, im);
-    for (let k = 0; k <= half; k++) power[k] = re[k] * re[k] + im[k] * im[k];
-    for (let b = 0; b < FBANK.bins; b++) {
-      const w = fbankMelBanks[b];
-      let sum = 0;
-      for (let k = 0; k <= half; k++) sum += w[k] * power[k];
-      data[t * FBANK.bins + b] = Math.log(Math.max(sum, FBANK_EPS));
-    }
+class SpeakerServer {
+  constructor(getBaseUrl) {
+    this.getBaseUrl = getBaseUrl;
+    this.session = Math.random().toString(36).slice(2) + Date.now().toString(36);
   }
 
-  for (let b = 0; b < FBANK.bins; b++) {
-    let mean = 0;
-    for (let t = 0; t < frames; t++) mean += data[t * FBANK.bins + b];
-    mean /= frames;
-    for (let t = 0; t < frames; t++) data[t * FBANK.bins + b] -= mean;
-  }
-  return { data, frames };
-}
-
-// ---------- 聲紋模型與線上分群（邏輯與原 diarize/server.py 相同） ----------
-
-const SPEAKER_MODEL_URL = 'models/wespeaker/voxceleb_resnet34_LM.onnx';
-const SPEAKER_SETUP_HINT = '找不到聲紋模型，請先執行 npm run setup:offline';
-const SPEAKER_SAME_THRESHOLD = 0.5; // 餘弦相似度 >= 此值視為同一人；越高越容易判成兩個人
-const SPEAKER_MIN_SECONDS = 1.0;
-const SPEAKER_MAX_SECONDS = 20;     // 過長的音訊只取最後這段，避免手機運算過久
-const SPEAKER_MAX_SPEAKERS = 2;
-
-class SpeakerIdentifier {
-  constructor() {
-    this.session = null;
-    this.ort = null;
-    this.loading = null;
-    this.centroids = [];
-    this.weights = [];
-    this.queue = Promise.resolve();
+  _url(path, params = {}) {
+    const base = String(this.getBaseUrl() || '').replace(/\/+$/, '');
+    if (!base) throw new Error('Proxy Base URL 未設定');
+    const qs = new URLSearchParams({ session: this.session, ...params });
+    return `${base}/api/speaker${path}?${qs}`;
   }
 
-  // 載入模型（只會載入一次）；找不到模型或載入失敗時丟出錯誤
-  health() {
-    this.loading ??= (async () => {
-      const url = new URL(SPEAKER_MODEL_URL, document.baseURI).href;
-      let head;
-      try {
-        head = await fetch(url, { method: 'HEAD' });
-      } catch {
-        throw new Error(SPEAKER_SETUP_HINT);
+  async _fetchJson(url, init, timeoutMs) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { ...init, signal: ctl.signal });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const err = new Error(data.error || `伺服器回應 ${res.status}`);
+        err.loading = !!data.loading;
+        throw err;
       }
-      if (!head.ok) throw new Error(SPEAKER_SETUP_HINT);
-      this.ort = await import('onnxruntime-web');
-      this.session = await this.ort.InferenceSession.create(url, { executionProviders: ['wasm'] });
-    })().catch((err) => {
-      this.loading = null;
+      return data;
+    } catch (err) {
+      if (err.name === 'AbortError') throw new Error('連線逾時');
+      if (err instanceof TypeError) throw new Error('無法連線到辨識伺服器');
       throw err;
-    });
-    return this.loading;
-  }
-
-  async _embed(pcm) {
-    await this.health();
-    const maxSamples = SPEAKER_MAX_SECONDS * SPEAKER_TARGET_RATE;
-    const fbank = computeFbank(pcm.length > maxSamples ? pcm.subarray(pcm.length - maxSamples) : pcm);
-    if (!fbank) return null;
-    const feats = new this.ort.Tensor('float32', fbank.data, [1, fbank.frames, FBANK.bins]);
-    const out = await this.session.run({ feats });
-    const emb = Array.from(Object.values(out)[0].data);
-    const norm = Math.hypot(...emb) + 1e-9;
-    return emb.map((v) => v / norm);
-  }
-
-  // 一次只跑一個推論，避免即時偵測與定稿辨識同時佔用 WASM
-  identify(pcm, enroll = true) {
-    const run = () => this._identify(pcm, enroll);
-    const result = this.queue.then(run, run);
-    this.queue = result.catch(() => {});
-    return result;
-  }
-
-  async _identify(pcm, enroll) {
-    const seconds = pcm.length / SPEAKER_TARGET_RATE;
-    if (seconds < SPEAKER_MIN_SECONDS) return { speaker: null, reason: 'too_short', seconds };
-    const emb = await this._embed(pcm);
-    if (!emb) return { speaker: null, reason: 'too_short', seconds };
-
-    const sims = this.centroids.map((c) => c.reduce((n, v, i) => n + v * emb[i], 0));
-    if (!this.centroids.length) {
-      if (!enroll) return { speaker: null, similarities: sims, created: false, seconds };
-      return { speaker: this._add(emb, seconds), similarities: sims, created: true, seconds };
+    } finally {
+      clearTimeout(timer);
     }
+  }
 
-    let best = 0;
-    sims.forEach((v, i) => { if (v > sims[best]) best = i; });
-    if (sims[best] >= SPEAKER_SAME_THRESHOLD) {
-      if (enroll) this._update(best, emb, seconds);
-      return { speaker: best, similarities: sims, created: false, seconds };
+  // 等到後端模型載入完成（冷啟動可能要一兩分鐘）；伺服器連不上或模型載入失敗就丟出錯誤
+  async waitReady(onStatus, isCancelled = () => false, maxMs = 120000) {
+    const deadline = Date.now() + maxMs;
+    let netFailures = 0;
+    while (!isCancelled()) {
+      try {
+        const h = await this._fetchJson(this._url('/health'), {}, 10000);
+        if (h.error) throw new Error(h.error);
+        if (h.ready) return h;
+        onStatus?.('伺服器載入辨識模型中…');
+        netFailures = 0;
+      } catch (err) {
+        // 首次請求常因穿隧/冷啟動失敗：重試幾次再放棄
+        if (++netFailures >= 3 || Date.now() > deadline) throw err;
+      }
+      if (Date.now() > deadline) throw new Error('伺服器模型載入逾時');
+      await new Promise((r) => setTimeout(r, 2000));
     }
-    if (this.centroids.length < SPEAKER_MAX_SPEAKERS) {
-      if (!enroll) return { speaker: null, similarities: sims, created: false, seconds };
-      return { speaker: this._add(emb, seconds), similarities: sims, created: true, seconds };
-    }
-    return { speaker: best, similarities: sims, created: false, seconds };
   }
 
-  _add(emb, seconds) {
-    this.centroids.push(emb);
-    this.weights.push(seconds);
-    return this.centroids.length - 1;
+  // 回傳 { text, language, speaker, similarities, seconds }；text 為空表示沒有可辨識的語音
+  async transcribe(pcm, { langs, enroll = true }) {
+    const url = this._url('/transcribe', { langs: langs.join(','), enroll: enroll ? '1' : '0' });
+    return this._fetchJson(url, { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: pcmToWav(pcm) }, 60000);
   }
 
-  _update(idx, emb, seconds) {
-    const w = this.weights[idx];
-    const merged = this.centroids[idx].map((v, i) => v * w + emb[i] * seconds);
-    const norm = Math.hypot(...merged) + 1e-9;
-    this.centroids[idx] = merged.map((v) => v / norm);
-    this.weights[idx] = w + seconds;
-  }
-
-  reset() {
-    this.centroids = [];
-    this.weights = [];
+  async reset() {
+    try {
+      await this._fetchJson(this._url('/reset'), { method: 'POST' }, 10000);
+    } catch { /* 重置失敗不影響使用 */ }
   }
 }

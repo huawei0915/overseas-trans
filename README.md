@@ -17,8 +17,12 @@ cp .env.example .env
 # 依需求填入 AZURE_KEY / GOOGLE_KEY / DEEPL_KEY（至少一組）
 npm run start:proxy
 
-# 1b) 下載離線模型（含說話者聲紋模型，約 26 MB；聲紋辨識在瀏覽器內執行，不需要後端）
+# 1b) 下載離線模型（Piper / 韓文語音；聲紋模型也會一併下載給後端使用）
 npm run setup:offline
+
+# 1c) 啟動語音辨識 + 聲紋服務（「自動辨識甲/乙方」需要；首次啟動會下載 Whisper 模型）
+python3 -m venv diarize/.venv && diarize/.venv/bin/pip install -r diarize/requirements.txt
+npm run start:diarize
 
 # 2) 另開一個終端啟動前端靜態頁
 python3 -m http.server 8000
@@ -37,7 +41,7 @@ gh repo create overseas-trans --public --source=. --push
 # 網址：https://<帳號>.github.io/overseas-trans/
 ```
 
-純靜態環境沒有 proxy：預設改為「直連 API + Web Speech 播放」，請在手機的設定面板貼上 Azure 或 Google Key（只存於該手機的 localStorage，不要寫進 repo）。Edge Read Aloud 語音需要後端，在此模式不可用；聲紋辨識在瀏覽器內執行，純靜態環境也能用。
+純靜態環境沒有 proxy：預設改為「直連 API + Web Speech 播放」，請在手機的設定面板貼上 Azure 或 Google Key（只存於該手機的 localStorage，不要寫進 repo）。Edge Read Aloud 語音與「自動辨識甲/乙方」需要後端；要在手機上使用，請照下一節把後端部署到伺服器，並設定 `PUBLIC_PROXY_BASE_URL`。
 
 **DeepL 會出現 CORS error**（DeepL 不允許瀏覽器直連），解法擇一：
 1. 改用 Azure / Google Key（兩者支援瀏覽器直連）。
@@ -63,17 +67,35 @@ npm run deploy:deepl-relay
 8. 播放譯文時會自動暫停辨識，避免麥克風把喇叭聲音誤收進來。
 9. 對話結束時按「停止對話」。
 
-## 自動辨識甲方／乙方（瀏覽器內聲紋）
+## 自動辨識甲方／乙方（伺服器端語音辨識 + 聲紋）
 
-勾選畫面上的「自動辨識甲/乙方」後，系統會一邊辨識語音、一邊錄下麥克風音訊，用 wespeaker ResNet34-LM（與 `pyannote/wespeaker-voxceleb-resnet34-LM` 同一組權重的 ONNX 模型，`models/wespeaker/`，由 `npm run setup:offline` 下載）在**瀏覽器內以 onnxruntime-web 執行**，取出每句話的聲紋並線上分群成兩位說話者，再自動：
+勾選畫面上的「自動辨識甲/乙方」後，手機**只開一路麥克風**錄音，瀏覽器依音量切出每一句（停頓 1 秒結句）並把整句音訊傳到後端；後端（[diarize/server.py](diarize/server.py)）一次完成：
 
-- 判定這句話是甲方還是乙方 → 以該方語言為來源、另一方語言為譯文，自動切換翻譯方向與播放語言。
-- **第一位被辨識出的說話者歸給「當下選定的說話者」**（預設甲方；開始前點卡片可改），第二位歸給另一方。
-- 說話途中（約開口後 0.8 秒）會即時偵測是否換人，換人就立刻改用對方語言重新辨識（換人前 ~1 秒的內容會被捨棄，因為是以錯誤語言辨識的）。
-- 聲紋判錯或換了現場的人時，按「重置聲紋」重新開始；模型載入失敗時自動退回原本的「語言偵測」。
-- 聲紋錄音與模型載入都在背景進行，不會擋住語音辨識。若裝置的麥克風無法同時供兩者使用（不論有無回報錯誤），系統會自動關閉聲紋辨識、退回語言偵測，並在狀態列顯示原因。
+1. **語音轉文字**：faster-whisper（預設 `small`，可用 `WHISPER_MODEL` 改成 `tiny`/`base`/`medium`），辨識語言限定在甲/乙雙方所選語言之內擇一。
+2. **聲紋分群**：wespeaker ResNet34-LM（ONNX）取出聲紋，線上分群成兩位說話者。
 
-全程在本機執行，音訊不會離開裝置、不需要後端或 Cloudflare。首次使用需下載約 26 MB 模型（之後由瀏覽器快取）。相似度門檻（0.5）與最短音訊長度（1 秒）在 [js/speaker.js](js/speaker.js) 的 `SPEAKER_SAME_THRESHOLD`、`SPEAKER_MIN_SECONDS`。`diarize/` 內的 pyannote Python 服務為舊版後端實作，前端已不再使用。
+前端據此自動判定甲方或乙方、切換翻譯方向與播放語言：
+
+- 雙方語言不同時，語言偵測信心高（≥ 0.8）就以語言為準，並用它決定第一位說話者的歸屬；信心不足時採用聲紋。雙方語言相同時只靠聲紋。
+- 沒有語言線索時，第一位被辨識出的說話者歸給「當下選定的說話者」，第二位歸給另一方。
+- 聲紋判錯或換了現場的人時，按「重置聲紋」重新開始。
+- 後端連不上時會自動退回瀏覽器內建的 Web Speech + 語言偵測，並在狀態列顯示原因。
+
+**為什麼改成這樣**：先前版本同時用 Web Speech 辨識與另開一路錄音做聲紋，手機瀏覽器通常不允許兩者共用麥克風，結果畫面一直停在「聆聽中…」。現在伺服器模式完全不使用 Web Speech，只有一路麥克風，手機（iOS Safari / Android Chrome）可正常使用，也不需要使用者自己的電腦。
+
+### 部署到伺服器（手機使用）
+
+```bash
+# 伺服器上（Docker）：同時啟動 proxy（翻譯、Edge TTS）與辨識服務
+cp .env.example .env          # 填入翻譯 API Key
+docker compose up -d --build  # 首次啟動會下載 Whisper 與聲紋模型（存在 volume，之後不用再下載）
+```
+
+- proxy 對外是 `8787` 埠；手機麥克風必須是 **https**，請用 Caddy / Nginx 或 `cloudflared tunnel --url http://localhost:8787` 提供 https 網址，填進 `.env` 的 `PUBLIC_PROXY_BASE_URL`（前端部署在 GitHub Pages 時也一樣）。
+- 不想用 Docker：在伺服器上 `pip install -r diarize/requirements.txt` 後 `python diarize/server.py`，再用 `node proxy-server.mjs`；環境變數見 [diarize/server.py](diarize/server.py) 開頭（`DIARIZE_HOST`/`DIARIZE_PORT`、`WHISPER_MODEL`、`WHISPER_COMPUTE`、`DIARIZE_THRESHOLD`…）。
+- 效能：`small` 在 2 核心 CPU 上辨識一句話約 2～5 秒；想更快改用 `WHISPER_MODEL=base`，想更準改用 `medium`（需要較多記憶體）。
+- 相似度門檻（預設 0.5）可用 `DIARIZE_THRESHOLD` 調整；聲紋模型缺檔時後端會自行下載。
+- 目前 proxy 沒有存取驗證，公開到網際網路時請自行在反向代理加上存取限制，以免他人佔用 CPU 與翻譯額度。
 
 ## 前端連線設定（.env）
 
@@ -81,13 +103,13 @@ npm run deploy:deepl-relay
 
 | 變數 | 說明 |
 |---|---|
-| `PUBLIC_PROXY_BASE_URL` | 後端 proxy（含聲紋服務、Edge TTS）對外的 **https** 網址，例如 Cloudflare Tunnel 網址 |
+| `PUBLIC_PROXY_BASE_URL` | 後端 proxy（含語音辨識/聲紋服務、Edge TTS）對外的 **https** 網址，例如 Cloudflare Tunnel 網址 |
 | `PUBLIC_DEEPL_RELAY_URL` | DeepL 中繼（Cloudflare Worker）網址 |
 | `PUBLIC_USE_PROXY` / `PUBLIC_AUTO_SPEAKER` | 選填 `true`/`false`，預設有後端網址時為 `true` |
 
 - 本機：改完 `.env` 執行 `npm run env:config`，重新整理頁面。
 - GitHub Pages：到 repo **Settings → Secrets and variables → Actions → Variables** 設定同名變數，推送後由 workflow 建置時帶入。
-- 注意：Cloudflare Worker（`deepl-relay`）只轉發 DeepL，**無法執行 Edge TTS**；需要的話請自己的電腦/主機跑 `npm run start:proxy`，再用 `cloudflared tunnel --url http://localhost:8787` 之類的方式取得 https 網址填入 `PUBLIC_PROXY_BASE_URL`（https 頁面不能連 http 後端）。
+- 注意：Cloudflare Worker（`deepl-relay`）只轉發 DeepL，**無法執行 Edge TTS**；需要的話請在自己的主機/伺服器跑 `npm run start:proxy`（或 `docker compose up -d`），再用 `cloudflared tunnel --url http://localhost:8787` 之類的方式取得 https 網址填入 `PUBLIC_PROXY_BASE_URL`（https 頁面不能連 http 後端）。
 
 ## 自動容錯
 
@@ -121,10 +143,11 @@ js/config.js    localStorage 設定存取
 js/translate.js 翻譯 provider 抽象層 + 額度容錯切換
 js/stt.js       Web Speech 辨識 + 1 秒靜音自動結句
 js/tts.js       多引擎 TTS（Web Speech / Google / Edge / Piper / Kokoro）+ 播放佇列 + 自動退回
-js/speaker.js   麥克風錄音切段 + 瀏覽器內聲紋擷取（fbank + ONNX）與線上分群
+js/speaker.js   單路麥克風錄音 + 依音量切句（VoiceListener）、呼叫後端辨識（SpeakerServer）
 js/app.js       主流程串接
-models/wespeaker/ 聲紋 ONNX 模型（由 setup:offline 下載）；diarize/server.py 為舊版 pyannote 後端（前端已不使用）
-proxy-server.mjs 後端 Proxy（/api/translate, /api/detect, /api/test, /api/tts/edge, /api/speaker/*）
+diarize/server.py 後端：faster-whisper 語音轉文字 + wespeaker 聲紋分群（models/wespeaker/ 為聲紋 ONNX，缺檔時自動下載）
+docker-compose.yml 一鍵部署後端（proxy + diarize）
+proxy-server.mjs 後端 Proxy（/api/translate, /api/detect, /api/test, /api/tts/edge, /api/speaker/*（轉發到 diarize））
 ```
 
 ## 注意事項

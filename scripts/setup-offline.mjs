@@ -14,7 +14,7 @@ const TSUKUYOMI = `${HF}/ayousanz/piper-plus-tsukuyomi-chan/resolve/main`;
 // Piper Plus 目前沒有韓文訓練模型，韓文使用 MMS-TTS Korean（VITS，ONNX）
 const MMS_KOR = `${HF}/Xenova/mms-tts-kor/resolve/main`;
 
-// 說話者聲紋模型（wespeaker ResNet34-LM，與 pyannote/wespeaker-voxceleb-resnet34-LM 同一組權重），在瀏覽器內以 onnxruntime-web 執行
+// 說話者聲紋模型（wespeaker ResNet34-LM，與 pyannote/wespeaker-voxceleb-resnet34-LM 同一組權重），由後端 diarize/server.py 以 onnxruntime 執行（缺檔時後端也會自行下載）
 const WESPEAKER = `${HF}/Wespeaker/wespeaker-voxceleb-resnet34-LM/resolve/main`;
 
 const FILES = [

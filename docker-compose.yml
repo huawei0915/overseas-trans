@@ -1,0 +1,29 @@
+# 在伺服器上一鍵啟動後端：docker compose up -d --build
+# proxy（翻譯 / Edge TTS / 轉發語音辨識）對外開 8787，請再用 HTTPS 反向代理或 Cloudflare Tunnel 包起來，
+# 並把該 https 網址填進前端的 PUBLIC_PROXY_BASE_URL（手機必須是 https 才能使用麥克風）。
+services:
+  diarize:
+    build: ./diarize
+    restart: unless-stopped
+    environment:
+      WHISPER_MODEL: ${WHISPER_MODEL:-small}   # tiny / base / small / medium：越大越準也越慢
+    volumes:
+      - models:/models
+
+  proxy:
+    image: node:22-slim
+    restart: unless-stopped
+    working_dir: /app
+    command: sh -c "npm ci --omit=dev && node proxy-server.mjs"
+    environment:
+      DIARIZE_URL: http://diarize:8788
+    volumes:
+      - .:/app   # proxy 會自動讀取 /app/.env（翻譯 API Key）
+      - /app/node_modules   # 容器內自己安裝，不與本機（不同平台）的 node_modules 混用
+    ports:
+      - "8787:8787"
+    depends_on:
+      - diarize
+
+volumes:
+  models:

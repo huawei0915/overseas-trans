@@ -1,4 +1,7 @@
-// 主流程：STT → 靜音 1 秒 → 聲紋辨識甲/乙方（瀏覽器內 wespeaker）→ 容錯翻譯 → TTS 播放 → 對話紀錄
+// 主流程：語音辨識 → 靜音 1 秒結句 → 判定甲/乙方 → 容錯翻譯 → TTS 播放 → 對話紀錄
+// 語音辨識有兩種模式：
+//  · 伺服器模式（勾選「自動辨識甲/乙方」）：只錄一路麥克風，整句音訊交給後端轉文字 + 聲紋分群，手機也能用
+//  · 瀏覽器模式：Web Speech API，以語言偵測推斷說話者
 (() => {
   const $ = (id) => document.getElementById(id);
 
@@ -39,34 +42,17 @@
   const stt = new SpeechEngine();
   const tts = new TTSPlayer(() => cfg);
   const translator = new Translator();
-  const recorder = new SpeakerRecorder();
-  const identifier = new SpeakerIdentifier();
+  const listener = new VoiceListener();
+  const speakerServer = new SpeakerServer(() => cfg.proxyBaseUrl);
 
-  const SPEAKER_PAD_MS = 1200;   // 辨識結果比實際開口晚出現，往前多取一點音訊
-  const SPEAKER_PROBE_MS = 1800; // 開口後多久做一次即時說話者偵測
+  const SERVER_LANG_CONFIDENCE = 0.8; // 後端語言偵測信心高於此值時，以語言決定甲/乙方
+  let serverMode = false;        // 目前 session 是否由後端辨識（伺服器模式）
   let clusterToParty = {};       // 聲紋群 → 'a' | 'b'
-  let audioStartMs = 0;          // 本句音訊起點（說話者切換重啟辨識時保留）
-  let probeTimer = null;
+  let serverQueue = Promise.resolve(); // 一句一句依序處理，確保聲紋登錄與翻譯/播放順序
 
   function setSpeakerStatus(message, isError = false) {
     els.speakerStatus.textContent = message;
     els.speakerStatus.classList.toggle('error', isError);
-  }
-
-  async function checkSpeakerService() {
-    if (!cfg.autoSpeaker) {
-      setSpeakerStatus('');
-      return false;
-    }
-    setSpeakerStatus('聲紋模型載入中…（首次約 26 MB）');
-    try {
-      await identifier.health();
-      setSpeakerStatus('聲紋辨識就緒（本機執行）');
-      return true;
-    } catch (err) {
-      setSpeakerStatus(`聲紋辨識無法使用（${err.message}），已改用語言偵測`, true);
-      return false;
-    }
   }
 
   els.autoSpeaker.checked = !!cfg.autoSpeaker;
@@ -74,128 +60,72 @@
     cfg.autoSpeaker = els.autoSpeaker.checked;
     cfg.autoSpeakerChosen = true;
     AppConfig.save(cfg);
+    setSpeakerStatus('');
+    // 進行中切換辨識模式：停掉目前的再依新設定重新開始
     if (sessionActive) {
-      if (cfg.autoSpeaker) void setupSpeaker();
-      else {
-        stopSpeakerWatchdog();
-        recorder.stop();
-      }
+      stopSession();
+      void startSession();
     }
-    void checkSpeakerService();
   });
   els.speakerReset.addEventListener('click', () => {
-    identifier.reset();
     clusterToParty = {};
-    audioStartMs = 0;
+    void speakerServer.reset();
     setSpeakerStatus('已重置聲紋，下一句會重新判定甲/乙方');
   });
 
-  function disableSpeakerForSession(message) {
-    stopSpeakerWatchdog();
-    recorder.stop();
-    cfg.autoSpeaker = false;
-    els.autoSpeaker.checked = false;
-    setSpeakerStatus(message, true);
-    if (sessionActive) restartRecognition();
-  }
-
-  async function startSpeakerRecorder() {
-    try {
-      await recorder.start();
-      if (recorder.running) startSpeakerWatchdog();
-    } catch (err) {
-      setSpeakerStatus(`無法錄音進行聲紋辨識（${err.message || err.name || '未知錯誤'}），已改用語言偵測`, true);
-    }
-  }
-
-  // 聲紋辨識初始化：先開始錄音（快），再背景載入模型（首次約 26 MB），都不擋住語音辨識
-  async function setupSpeaker() {
-    await startSpeakerRecorder();
-    if (!recorder.running || !sessionActive || !cfg.autoSpeaker) return;
-    // 模型不可用時聲紋錄音留著也沒用，關掉以免白白佔用麥克風
-    if (!(await checkSpeakerService()) && recorder.running) {
-      stopSpeakerWatchdog();
-      recorder.stop();
-    }
-  }
-
-  // 部分裝置/瀏覽器的麥克風無法同時供語音辨識與聲紋錄音使用，且不一定回報錯誤：
-  // 聲紋錄音明明聽得到人聲，語音辨識卻一直收不到任何結果（畫面停在「聆聽中…」）。
-  // 看門狗持續比對兩邊的狀態，偵測到這種「靜默搶麥」就自動關閉聲紋、退回語言偵測。
-  let speakerWatchdog = null;
-  let speakerHijackSince = 0;
-
-  function startSpeakerWatchdog() {
-    stopSpeakerWatchdog();
-    speakerWatchdog = setInterval(() => {
-      if (!sessionActive || !recorder.running || stt.paused) { speakerHijackSince = 0; return; }
-      const now = Date.now();
-      const recorderHearsVoice = recorder.lastVoiceMs && now - recorder.lastVoiceMs < 800;
-      const sttHears = !!stt.startMs || (stt.lastMs && now - stt.lastMs < 1500);
-      if (recorderHearsVoice && !sttHears) {
-        speakerHijackSince ||= now;
-        if (now - speakerHijackSince >= 5000) {
-          disableSpeakerForSession('偵測到聲紋錄音與語音辨識無法共用麥克風，已關閉聲紋辨識、改用語言偵測');
-        }
-      } else {
-        speakerHijackSince = 0;
-      }
-    }, 1000);
-  }
-
-  function stopSpeakerWatchdog() {
-    if (speakerWatchdog) {
-      clearInterval(speakerWatchdog);
-      speakerWatchdog = null;
-    }
-    speakerHijackSince = 0;
-  }
-
-  // 第一位被辨識出的說話者歸給「當下選定的說話者」，第二位歸給另一方
-  function partyForCluster(idx, allowAssign) {
+  // 第一位被辨識出的說話者歸給語言對應的一方（雙方語言不同時），否則歸給「當下選定的說話者」；第二位歸給另一方
+  function partyForCluster(idx, langParty) {
     if (!('0' in clusterToParty)) {
-      if (!allowAssign) return null;
-      clusterToParty['0'] = currentSpeaker;
-      clusterToParty['1'] = currentSpeaker === 'a' ? 'b' : 'a';
+      const first = langParty || currentSpeaker;
+      clusterToParty['0'] = first;
+      clusterToParty['1'] = first === 'a' ? 'b' : 'a';
     }
     return clusterToParty[String(idx)] || null;
   }
 
-  async function identifyByVoice(startMs, endMs, enroll) {
-    if (!cfg.autoSpeaker || !recorder.running || !startMs) return null;
-    const pcm = recorder.slicePcm(startMs - SPEAKER_PAD_MS, endMs + 300);
-    if (!pcm) return null;
+  // 伺服器模式一句話：音訊 → 後端（轉文字 + 聲紋）→ 判定甲/乙方 → 翻譯播放
+  async function handleServerUtterance(pcm) {
+    els.interim.textContent = '辨識中…';
+    let r;
     try {
-      const r = await identifier.identify(pcm, enroll);
-      setSpeakerStatus('聲紋辨識就緒（本機執行）');
-      if (r.speaker != null) return partyForCluster(r.speaker, enroll);
-      // 即時偵測時與已登錄的聲紋都不像 → 判定為另一方開口
-      if (!enroll && r.similarities?.length && '0' in clusterToParty) {
-        return clusterToParty['0'] === 'a' ? 'b' : 'a';
-      }
-      return null;
+      r = await speakerServer.transcribe(pcm, { langs: [cfg.langA, cfg.langB], enroll: true });
     } catch (err) {
-      setSpeakerStatus(`聲紋辨識失敗（${err.message}），已改用語言偵測`, true);
-      return null;
+      setSpeakerStatus(`語音辨識失敗：${err.message}`, true);
+      return;
+    } finally {
+      if (sessionActive) els.interim.textContent = '聆聽中…';
     }
+    setSpeakerStatus('');
+    const text = String(r.text || '').trim();
+    if (!text) return;
+
+    // 雙方語言不同時，辨識出的語言就是最直接的線索（且翻譯方向必須與實際說的語言一致）：
+    // 語言信心夠高就以語言為準，並用它校正第一位說話者的歸屬；信心不足才採用聲紋
+    const distinctLangs = cfg.langA !== cfg.langB;
+    const langParty = distinctLangs && r.language ? partyFromLanguage(r.language) : null;
+    const langConfident = !!langParty && (r.language_confidence ?? 1) >= SERVER_LANG_CONFIDENCE;
+    const voiceParty = r.speaker != null ? partyForCluster(r.speaker, langConfident ? langParty : null) : null;
+    let party;
+    let detectedBy = null;
+    if (langConfident || (langParty && !voiceParty)) {
+      party = langParty;
+      detectedBy = 'whisper';
+    } else if (voiceParty) {
+      party = voiceParty;
+      detectedBy = 'voiceprint';
+    } else {
+      party = currentSpeaker; // 音訊太短、沒有聲紋也無從判斷語言
+    }
+    if (party !== currentSpeaker) {
+      currentSpeaker = party;
+      updateMicUI();
+    }
+    const sourceLangId = party === 'a' ? cfg.langA : cfg.langB;
+    await translateAndSpeak(text, party, sourceLangId, detectedBy);
   }
 
-  function switchSpeaker(party) {
-    currentSpeaker = party;
-    updateMicUI();
-    if (sessionActive && !stt.paused) restartRecognition();
-  }
-
-  // 說話途中先偵測是誰，若換人了就立刻改用對方語言重新辨識（否則整句會用錯語言辨識）
-  function scheduleSpeakerProbe(startMs) {
-    clearTimeout(probeTimer);
-    if (!cfg.autoSpeaker || !recorder.running || !('0' in clusterToParty)) return;
-    probeTimer = setTimeout(async () => {
-      const party = await identifyByVoice(audioStartMs || startMs, Date.now(), false);
-      if (!party || party === currentSpeaker || !sessionActive || stt.startMs !== startMs) return;
-      stt.discardPending();
-      switchSpeaker(party);
-    }, SPEAKER_PROBE_MS);
+  function enqueueServerUtterance(pcm) {
+    serverQueue = serverQueue.then(() => handleServerUtterance(pcm)).catch(() => {});
   }
 
   // ---------- 語音引擎選單 ----------
@@ -248,13 +178,13 @@
     cfg.langA = els.langA.value;
     AppConfig.save(cfg);
     preloadTts();
-    if (sessionActive && currentSpeaker === 'a') restartRecognition();
+    if (sessionActive && !serverMode && currentSpeaker === 'a') restartRecognition();
   });
   els.langB.addEventListener('change', () => {
     cfg.langB = els.langB.value;
     AppConfig.save(cfg);
     preloadTts();
-    if (sessionActive && currentSpeaker === 'b') restartRecognition();
+    if (sessionActive && !serverMode && currentSpeaker === 'b') restartRecognition();
   });
 
   // ---------- Provider 狀態燈 ----------
@@ -309,11 +239,12 @@
   tts.onStateChange = (speaking) => {
     els.ttsIndicator.classList.toggle('hidden', !speaking);
     // 播放譯文時暫停辨識，避免麥克風把喇叭聲音又辨識回去造成迴圈
-    recorder.clear();
-    audioStartMs = 0;
-    clearTimeout(probeTimer);
     if (sessionActive) {
-      if (speaking) stt.pause();
+      if (serverMode) {
+        if (speaking) listener.pause();
+        else listener.resume();
+        els.interim.textContent = speaking ? '' : '聆聽中…';
+      } else if (speaking) stt.pause();
       else stt.resume();
     }
   };
@@ -340,7 +271,7 @@
     card.className = `msg from-${party}`;
     const time = new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const detectedName = detectedBy && PROVIDERS[detectedBy] ? PROVIDERS[detectedBy].name : detectedBy;
-    const detectedTag = detectedBy === 'pyannote' ? ' · 聲紋辨識' : detectedName ? ` · 自動偵測(${detectedName})` : '';
+    const detectedTag = detectedBy === 'voiceprint' ? ' · 聲紋辨識' : detectedBy === 'whisper' ? ' · 語音語言辨識' : detectedName ? ` · 自動偵測(${detectedName})` : '';
     card.innerHTML = `
       <div class="msg-meta">${party === 'a' ? '甲方' : '乙方'} · ${lang ? lang.label : sourceLangId}${detectedTag} · ${time}</div>
       <div class="msg-original"></div>
@@ -400,23 +331,12 @@
     return currentSpeaker;
   }
 
-  async function handleUtterance(text, meta = null) {
+  async function handleUtterance(text) {
     let party = currentSpeaker;
     let sourceLangId = party === 'a' ? cfg.langA : cfg.langB;
     let detectedBy = null;
 
-    const startMs = meta?.startMs ? Math.min(meta.startMs, audioStartMs || meta.startMs) : 0;
-    audioStartMs = 0;
-    const voiceParty = meta ? await identifyByVoice(startMs, meta.endMs, true) : null;
-
-    if (voiceParty) {
-      party = voiceParty;
-      sourceLangId = party === 'a' ? cfg.langA : cfg.langB;
-      detectedBy = 'pyannote';
-      if (party !== currentSpeaker) switchSpeaker(party);
-    }
-
-    const detected = voiceParty ? null : await translator.detectLanguage(text, cfg);
+    const detected = await translator.detectLanguage(text, cfg);
     if (detected?.langId) {
       sourceLangId = detected.langId;
       detectedBy = detected.provider;
@@ -424,13 +344,17 @@
       if (inferredParty !== currentSpeaker) {
         currentSpeaker = inferredParty;
         updateMicUI();
-        if (sessionActive && !stt.paused) {
+        if (sessionActive && !serverMode && !stt.paused) {
           restartRecognition();
         }
       }
       party = inferredParty;
     }
 
+    await translateAndSpeak(text, party, sourceLangId, detectedBy);
+  }
+
+  async function translateAndSpeak(text, party, sourceLangId, detectedBy) {
     const targetLangId = party === 'a' ? cfg.langB : cfg.langA;
     const card = addUtteranceCard(party, text, sourceLangId, detectedBy);
 
@@ -477,26 +401,16 @@
       onInterim: (text) => {
         els.interim.textContent = text || '聆聽中…';
       },
-      onSpeechStart: (startMs) => {
-        if (!audioStartMs) audioStartMs = startMs;
-        scheduleSpeakerProbe(startMs);
-      },
-      onUtterance: (text, meta) => {
+      onUtterance: (text) => {
         // 結句後繼續聆聽，不需再按任何按鈕
-        clearTimeout(probeTimer);
         els.interim.textContent = '聆聽中…';
-        handleUtterance(text, meta);
+        handleUtterance(text);
       },
       onError: (code) => {
         if (code === 'not-allowed' || code === 'service-not-allowed') {
           setMicWarning('麥克風權限被拒絕。請點網址列左側圖示允許麥克風後重試。');
           sessionActive = false;
           updateMicUI();
-          return;
-        }
-        if (recorder.running && (code === 'audio-capture' || code === 'aborted')) {
-          // 聲紋錄音與語音辨識搶同一支麥克風：放棄聲紋，保住語音轉文字
-          disableSpeakerForSession('麥克風無法同時給語音辨識與聲紋錄音使用，已關閉聲紋辨識、改用語言偵測');
           return;
         }
         if (code === 'audio-capture') {
@@ -541,7 +455,73 @@
     stream.getTracks().forEach((t) => t.stop());
   }
 
+  let starting = false;
+  let startToken = 0; // 啟動中再按一次按鈕可取消（例如伺服器模型還在載入）
+
+  // 伺服器模式：先開一路麥克風（在點擊手勢內取得權限），再等後端模型就緒。回傳 false 表示無法使用伺服器，改走瀏覽器模式
+  async function startServerSession(token) {
+    let ready = false;
+    els.interim.textContent = '啟動麥克風…';
+    try {
+      await listener.start({
+        onSpeechStart: () => { if (ready) els.interim.textContent = '說話中…'; },
+        onDiscard: () => { if (ready) els.interim.textContent = '聆聽中…'; },
+        onUtterance: (pcm) => { if (ready) enqueueServerUtterance(pcm); },
+      });
+    } catch (err) {
+      listener.stop(false);
+      els.interim.textContent = '';
+      const denied = err?.name === 'NotAllowedError' || err?.name === 'SecurityError';
+      setMicWarning(denied
+        ? '麥克風權限被拒絕。請在瀏覽器網址列/網站設定允許麥克風後重試。'
+        : `無法啟動麥克風：${err?.message || err?.name || '未知錯誤'}`);
+      return true;
+    }
+    if (token !== startToken) return true;
+
+    setSpeakerStatus('連線辨識伺服器…');
+    els.interim.textContent = '連線辨識伺服器…';
+    try {
+      await speakerServer.waitReady((msg) => {
+        if (token !== startToken) return;
+        setSpeakerStatus(msg);
+        els.interim.textContent = msg;
+      }, () => token !== startToken);
+    } catch (err) {
+      if (token !== startToken) return true;
+      listener.stop(false);
+      els.interim.textContent = '';
+      if (!stt.supported) {
+        setSpeakerStatus(`辨識伺服器無法使用（${err.message}）`, true);
+        setMicWarning('辨識伺服器無法使用，且此瀏覽器不支援內建語音辨識。請確認後端已啟動並在設定填入正確的 Proxy 網址。');
+        return true;
+      }
+      setSpeakerStatus(`辨識伺服器無法使用（${err.message}），已改用瀏覽器語音辨識`, true);
+      return false;
+    }
+    if (token !== startToken) return true;
+    ready = true;
+    setMicWarning('');
+    setSpeakerStatus('');
+    serverMode = true;
+    sessionActive = true;
+    updateMicUI();
+    els.interim.textContent = '聆聽中…';
+    return true;
+  }
+
   async function startSession() {
+    serverMode = false;
+    const token = ++startToken;
+    if (cfg.autoSpeaker) {
+      listener.prepare(); // 需在點擊手勢內同步建立（iOS Safari）
+      starting = true;
+      try {
+        if (await startServerSession(token)) return;
+      } finally {
+        if (token === startToken) starting = false;
+      }
+    }
     if (!stt.supported) {
       els.browserWarning.classList.remove('hidden');
       return;
@@ -555,16 +535,14 @@
     }
     sessionActive = true;
     updateMicUI();
-    startRecognition(); // 先啟動語音辨識，聲紋錄音與模型載入在背景進行，不讓說話被卡住
-    if (cfg.autoSpeaker) void setupSpeaker();
+    startRecognition();
   }
 
   function stopSession() {
     sessionActive = false;
-    clearTimeout(probeTimer);
-    stopSpeakerWatchdog();
-    stt.stop(); // 會先把累積到一半的那一句翻譯完（需在關閉錄音前，才取得得到音訊）
-    setTimeout(() => { if (!sessionActive) recorder.stop(); }, 3000);
+    if (serverMode) listener.stop(); // 會把說到一半的那一句送去辨識
+    serverMode = false;
+    stt.stop(); // 會先把累積到一半的那一句翻譯完
     tts.stopAll();
     els.interim.textContent = '';
     updateMicUI();
@@ -580,7 +558,7 @@
 
   function selectSpeaker(party) {
     if (party === currentSpeaker) return;
-    if (sessionActive) {
+    if (sessionActive && !serverMode) {
       stt.stop(); // 先把上一位說到一半的句子翻譯完
       currentSpeaker = party;
       startRecognition();
@@ -591,7 +569,13 @@
   }
 
   els.micMaster.addEventListener('click', () => {
-    if (sessionActive) stopSession();
+    if (starting) {
+      startToken++;
+      starting = false;
+      listener.stop(false);
+      setSpeakerStatus('');
+      els.interim.textContent = '';
+    } else if (sessionActive) stopSession();
     else void startSession();
   });
 
