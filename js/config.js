@@ -24,6 +24,7 @@ const DEFAULT_CONFIG = {
   ttsEngine: HAS_PROXY ? 'edge' : 'webspeech', // 'webspeech' | 'edge' | 'piper' | 'kokoro'
   langA: 'zh-TW',
   langB: 'en',
+  speakerMode: 'voice', // 'voice' 以聲紋為主 | 'language' 雙方語言不同時以說話語言為主
   autoSpeaker: APP_ENV.autoSpeaker ?? HAS_PROXY, // 由後端（diarize/server.py）轉文字並以聲紋自動分辨甲/乙方，需要後端
 };
 

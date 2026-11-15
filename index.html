@@ -73,6 +73,10 @@
         <input type="checkbox" id="auto-speaker" />
         🧑‍🤝‍🧑 自動辨識甲/乙方（伺服器語音 + 聲紋）
       </label>
+      <select id="speaker-mode" class="lang-select" aria-label="甲乙方辨識依據">
+        <option value="voice">聲紋優先</option>
+        <option value="language">語言優先</option>
+      </select>
       <button id="speaker-reset" class="btn btn-small" type="button">重置聲紋</button>
       <span id="speaker-status" class="tts-status" aria-live="polite"></span>
     </div>
@@ -184,13 +188,13 @@
 
   <script src="js/env-config.js?v=20261111-16"></script>
   <script src="js/langs.js?v=20261111-16"></script>
-  <script src="js/config.js?v=20261115-2"></script>
+  <script src="js/config.js?v=20261115-3"></script>
   <script src="js/translate.js?v=20261111-16"></script>
-  <script src="js/speaker.js?v=20261115-2"></script>
+  <script src="js/speaker.js?v=20261115-4"></script>
   <script src="js/stt.js?v=20261111-16"></script>
   <script src="js/piperplus.js?v=20261111-16"></script>
   <script src="js/tts.js?v=20261111-16"></script>
-  <script src="js/app.js?v=20261115-2"></script>
+  <script src="js/app.js?v=20261115-3"></script>
   <script>
     if ('serviceWorker' in navigator && window.isSecureContext) {
       navigator.serviceWorker.register('sw.js').catch(() => { });

@@ -23,6 +23,7 @@
     ttsEngine: $('tts-engine'),
     ttsStatus: $('tts-status'),
     autoSpeaker: $('auto-speaker'),
+    speakerMode: $('speaker-mode'),
     speakerReset: $('speaker-reset'),
     speakerStatus: $('speaker-status'),
     providerStatus: $('provider-status'),
@@ -45,9 +46,7 @@
   const listener = new VoiceListener();
   const speakerServer = new SpeakerServer(() => cfg.proxyBaseUrl);
 
-  const SERVER_LANG_CONFIDENCE = 0.8; // 後端語言偵測信心高於此值時，以語言決定甲/乙方
   let serverMode = false;        // 目前 session 是否由後端辨識（伺服器模式）
-  let clusterToParty = {};       // 聲紋群 → 'a' | 'b'
   let serverQueue = Promise.resolve(); // 一句一句依序處理，確保聲紋登錄與翻譯/播放順序
 
   function setSpeakerStatus(message, isError = false) {
@@ -67,61 +66,50 @@
       void startSession();
     }
   });
+  els.speakerMode.value = cfg.speakerMode;
+  els.speakerMode.addEventListener('change', () => {
+    cfg.speakerMode = els.speakerMode.value;
+    AppConfig.save(cfg);
+  });
   els.speakerReset.addEventListener('click', () => {
-    clusterToParty = {};
     void speakerServer.reset();
     setSpeakerStatus('已重置聲紋，下一句會重新判定甲/乙方');
   });
 
-  // 第一位被辨識出的說話者歸給語言對應的一方（雙方語言不同時），否則歸給「當下選定的說話者」；第二位歸給另一方
-  function partyForCluster(idx, langParty) {
-    if (!('0' in clusterToParty)) {
-      const first = langParty || currentSpeaker;
-      clusterToParty['0'] = first;
-      clusterToParty['1'] = first === 'a' ? 'b' : 'a';
-    }
-    return clusterToParty[String(idx)] || null;
-  }
-
-  // 伺服器模式一句話：音訊 → 後端（轉文字 + 聲紋）→ 判定甲/乙方 → 翻譯播放
+  // 伺服器模式一句話：音訊 → 後端（轉文字 + 聲紋，後端回報 speaker：0 甲 / 1 乙）→ 翻譯播放
   async function handleServerUtterance(pcm) {
     els.interim.textContent = '辨識中…';
     let r;
     try {
-      r = await speakerServer.transcribe(pcm, { langs: [cfg.langA, cfg.langB], enroll: true });
+      r = await speakerServer.transcribe(pcm, {
+        langs: [cfg.langA, cfg.langB],
+        mode: cfg.speakerMode,
+        prior: currentSpeaker,
+      });
     } catch (err) {
       setSpeakerStatus(`語音辨識失敗：${err.message}`, true);
       return;
     } finally {
       if (sessionActive) els.interim.textContent = '聆聽中…';
     }
-    setSpeakerStatus('');
     const text = String(r.text || '').trim();
     if (!text) return;
 
-    // 雙方語言不同時，辨識出的語言就是最直接的線索（且翻譯方向必須與實際說的語言一致）：
-    // 語言信心夠高就以語言為準，並用它校正第一位說話者的歸屬；信心不足才採用聲紋
-    const distinctLangs = cfg.langA !== cfg.langB;
-    const langParty = distinctLangs && r.language ? partyFromLanguage(r.language) : null;
-    const langConfident = !!langParty && (r.language_confidence ?? 1) >= SERVER_LANG_CONFIDENCE;
-    const voiceParty = r.speaker != null ? partyForCluster(r.speaker, langConfident ? langParty : null) : null;
-    let party;
-    let detectedBy = null;
-    if (langConfident || (langParty && !voiceParty)) {
-      party = langParty;
-      detectedBy = 'whisper';
-    } else if (voiceParty) {
-      party = voiceParty;
-      detectedBy = 'voiceprint';
-    } else {
-      party = currentSpeaker; // 音訊太短、沒有聲紋也無從判斷語言
+    // 音訊太短、沒有聲紋也無從判斷語言時，沿用目前說話者
+    const party = r.speaker === 0 ? 'a' : r.speaker === 1 ? 'b' : currentSpeaker;
+    const detectedBy = r.speaker == null ? null : r.source === 'language' ? 'whisper' : 'voiceprint';
+    let detail = '';
+    if (Array.isArray(r.similarities) && r.similarities.some((v) => v != null)) {
+      const [sa, sb] = r.similarities.map((v) => (v == null ? '–' : v.toFixed(2)));
+      detail = `相似度 甲${sa}/乙${sb}`;
+      setSpeakerStatus(detail);
     }
     if (party !== currentSpeaker) {
       currentSpeaker = party;
       updateMicUI();
     }
     const sourceLangId = party === 'a' ? cfg.langA : cfg.langB;
-    await translateAndSpeak(text, party, sourceLangId, detectedBy);
+    await translateAndSpeak(text, party, sourceLangId, detectedBy, detail);
   }
 
   function enqueueServerUtterance(pcm) {
@@ -264,14 +252,14 @@
     els.transcript.appendChild(p);
   }
 
-  function addUtteranceCard(party, original, sourceLangId, detectedBy = null) {
+  function addUtteranceCard(party, original, sourceLangId, detectedBy = null, detail = '') {
     clearTranscriptPlaceholder();
     const lang = findLanguage(sourceLangId);
     const card = document.createElement('div');
     card.className = `msg from-${party}`;
     const time = new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const detectedName = detectedBy && PROVIDERS[detectedBy] ? PROVIDERS[detectedBy].name : detectedBy;
-    const detectedTag = detectedBy === 'voiceprint' ? ' · 聲紋辨識' : detectedBy === 'whisper' ? ' · 語音語言辨識' : detectedName ? ` · 自動偵測(${detectedName})` : '';
+    const detectedTag = detectedBy === 'voiceprint' ? ` · 聲紋辨識${detail ? `（${detail}）` : ''}` : detectedBy === 'whisper' ? ` · 語音語言辨識${detail ? `（${detail}）` : ''}` : detectedName ? ` · 自動偵測(${detectedName})` : '';
     card.innerHTML = `
       <div class="msg-meta">${party === 'a' ? '甲方' : '乙方'} · ${lang ? lang.label : sourceLangId}${detectedTag} · ${time}</div>
       <div class="msg-original"></div>
@@ -354,9 +342,9 @@
     await translateAndSpeak(text, party, sourceLangId, detectedBy);
   }
 
-  async function translateAndSpeak(text, party, sourceLangId, detectedBy) {
+  async function translateAndSpeak(text, party, sourceLangId, detectedBy, detail = '') {
     const targetLangId = party === 'a' ? cfg.langB : cfg.langA;
-    const card = addUtteranceCard(party, text, sourceLangId, detectedBy);
+    const card = addUtteranceCard(party, text, sourceLangId, detectedBy, detail);
 
     // 雙方語言相同：不需翻譯也不播放
     if (sourceLangId === targetLangId) {

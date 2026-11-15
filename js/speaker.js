@@ -10,6 +10,7 @@ const VOICE_MAX_UTTERANCE_MS = 25000;
 const VOICE_PREROLL_CHUNKS = 4;     // 開口前多保留幾塊音訊，避免吃掉字首
 const VOICE_START_RMS = 0.015;
 const VOICE_KEEP_RMS = 0.008;
+const VOICE_MAX_NOISE_FLOOR = 0.05;
 
 class VoiceListener {
   constructor() {
@@ -22,7 +23,7 @@ class VoiceListener {
     this.starting = null;
     this.callbacks = {};
     this._resetState();
-    this.noiseFloor = 0;
+    this.noiseFloor = null;
   }
 
   _resetState() {
@@ -73,6 +74,7 @@ class VoiceListener {
       this.node.connect(this.ctx.destination); // ScriptProcessor 需連到輸出才會觸發；輸出為靜音
       this.running = true;
       this.paused = false;
+      this.noiseFloor = null;
       this._resetState();
       // 活檢：確認真的有音訊流進來，失敗就明確報錯而不是靜靜沒反應
       await new Promise((resolve, reject) => {
@@ -97,8 +99,10 @@ class VoiceListener {
     this.totalMs += dur;
 
     if (!this.speaking) {
-      this.noiseFloor = this.noiseFloor ? this.noiseFloor * 0.95 + rms * 0.05 : rms;
+      // 底噪只用「不像人聲」的音訊更新並設上限，否則開口的瞬間底噪就被墊高、永遠偵測不到說話
+      this.noiseFloor ??= Math.min(rms, VOICE_START_RMS);
       const startThr = Math.max(VOICE_START_RMS, this.noiseFloor * 3);
+      if (rms <= startThr) this.noiseFloor = Math.min(VOICE_MAX_NOISE_FLOOR, this.noiseFloor * 0.95 + rms * 0.05);
       this.preroll.push(chunk);
       if (this.preroll.length > VOICE_PREROLL_CHUNKS) this.preroll.shift();
       this.voicedRun = rms > startThr ? this.voicedRun + 1 : 0;
@@ -264,9 +268,9 @@ class SpeakerServer {
     }
   }
 
-  // 回傳 { text, language, speaker, similarities, seconds }；text 為空表示沒有可辨識的語音
-  async transcribe(pcm, { langs, enroll = true }) {
-    const url = this._url('/transcribe', { langs: langs.join(','), enroll: enroll ? '1' : '0' });
+  // 回傳 { text, speaker(0 甲 / 1 乙 / null), source('voice'|'language'), similarities, ... }；text 為空表示沒有可辨識的語音
+  async transcribe(pcm, { langs, mode = 'voice', prior = 'a' }) {
+    const url = this._url('/transcribe', { langs: langs.join(','), mode, prior });
     return this._fetchJson(url, { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: pcmToWav(pcm) }, 60000);
   }
 

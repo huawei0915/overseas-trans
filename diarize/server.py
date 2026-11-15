@@ -5,8 +5,10 @@
   2. 聲紋擷取（wespeaker ResNet34-LM，ONNX）並線上分群成甲/乙兩位說話者
 前端經由 proxy 呼叫 /api/speaker/*，完全不需要使用者自己的電腦。
 
-POST /transcribe?session=<id>&langs=zh-TW,en&enroll=1|0   body: 16 kHz mono 16-bit WAV
-POST /identify?session=<id>&enroll=1|0                    body: 同上（只做聲紋，不轉文字）
+POST /transcribe?session=<id>&langs=<甲方語言>,<乙方語言>&mode=voice|language&prior=a|b&enroll=1|0
+                                                          body: 16 kHz mono 16-bit WAV
+POST /identify?session=<id>&enroll=1|0&prior=a|b          body: 同上（只做聲紋，不轉文字）
+回傳 speaker：0 = 甲方、1 = 乙方。
 POST /reset?session=<id>
 GET  /health
 """
@@ -25,6 +27,7 @@ import kaldi_native_fbank as knf
 import numpy as np
 import onnxruntime as ort
 from faster_whisper import WhisperModel
+from faster_whisper.vad import VadOptions, collect_chunks, get_speech_timestamps
 
 HOST = os.environ.get("DIARIZE_HOST", "127.0.0.1")
 PORT = int(os.environ.get("DIARIZE_PORT", "8788"))
@@ -39,9 +42,9 @@ WHISPER_COMPUTE = os.environ.get("WHISPER_COMPUTE", "int8")
 WHISPER_THREADS = int(os.environ.get("WHISPER_THREADS", "0"))  # 0 = 自動
 # 餘弦相似度 >= 此值視為同一人；越高越容易判成兩個人
 SAME_SPEAKER_THRESHOLD = float(os.environ.get("DIARIZE_THRESHOLD", "0.5"))
-MIN_SECONDS = float(os.environ.get("DIARIZE_MIN_SECONDS", "1.0"))
+MIN_SECONDS = float(os.environ.get("DIARIZE_MIN_SECONDS", "1.0"))  # 有人聲的部分至少要這麼長才取聲紋
+LANG_CONFIDENT = float(os.environ.get("DIARIZE_LANG_CONFIDENCE", "0.8"))
 MAX_SECONDS = 30
-MAX_SPEAKERS = 2
 MAX_BODY = 8_000_000
 SAMPLE_RATE = 16000
 SESSION_TTL = 6 * 3600
@@ -103,7 +106,22 @@ def fbank(pcm):
     return feats - feats.mean(axis=0, keepdims=True)
 
 
+def speech_only(pcm):
+    """只留有人聲的片段：切掉前後靜音與雜音，聲紋才不會被稀釋。"""
+    try:
+        chunks = get_speech_timestamps(pcm, VadOptions())
+        if chunks:
+            parts, _ = collect_chunks(pcm, chunks)
+            return np.concatenate(parts) if parts else pcm
+    except Exception as err:  # noqa: BLE001
+        log(f"vad failed, using full audio: {err}")
+    return pcm
+
+
 def embed(pcm):
+    pcm = speech_only(pcm)
+    if len(pcm) < MIN_SECONDS * SAMPLE_RATE:
+        return None
     feats = fbank(pcm)
     if feats is None:
         return None
@@ -113,41 +131,44 @@ def embed(pcm):
 
 
 class Session:
+    """兩個說話者欄位：0 = 甲方、1 = 乙方，各自累積一個聲紋中心（centroid）。"""
+
     def __init__(self):
-        self.centroids = []  # list[np.ndarray]，已正規化
-        self.weights = []    # 各說話者累積秒數
+        self.centroids = [None, None]
+        self.weights = [0.0, 0.0]
         self.touched = time.time()
 
-    def identify(self, emb, seconds, enroll):
+    def identify(self, emb, seconds, enroll, label=None, prior=0):
+        """回傳 (欄位, 與兩欄的相似度[None 表示該欄尚無聲紋])。
+
+        label：已知是誰（語言優先模式下由語言決定）→ 直接登錄到該欄。
+        prior：完全沒有聲紋可比對時，第一位說話者歸給哪一欄。
+        """
         self.touched = time.time()
         emb = emb / (np.linalg.norm(emb) + 1e-9)
-        sims = [float(np.dot(emb, c)) for c in self.centroids]
+        sims = [None if c is None else float(np.dot(emb, c)) for c in self.centroids]
+        filled = [i for i, c in enumerate(self.centroids) if c is not None]
 
-        if not self.centroids:
-            if not enroll:
-                return None, sims, False
-            return self._add(emb, seconds), sims, True
-
-        best = int(np.argmax(sims))
-        if sims[best] >= SAME_SPEAKER_THRESHOLD:
-            speaker, created = best, False
-        elif len(self.centroids) < MAX_SPEAKERS:
-            if not enroll:
-                return None, sims, False
-            return self._add(emb, seconds), sims, True
+        if label is not None:
+            speaker = label
+        elif not filled:
+            speaker = prior
+        elif len(filled) == 1:
+            # 只認識一個人：像他就是他，不像就是另一位（對話只有兩個人）
+            speaker = filled[0] if sims[filled[0]] >= SAME_SPEAKER_THRESHOLD else 1 - filled[0]
         else:
-            speaker, created = best, False
+            speaker = 0 if sims[0] >= sims[1] else 1
 
-        if enroll and sims[speaker] >= SAME_SPEAKER_THRESHOLD:
-            self._update(speaker, emb, seconds)
-        return speaker, sims, created
-
-    def _add(self, emb, seconds):
-        self.centroids.append(emb)
-        self.weights.append(seconds)
-        return len(self.centroids) - 1
+        if enroll:
+            if label is not None or sims[speaker] is None or sims[speaker] >= SAME_SPEAKER_THRESHOLD or len(filled) < 2:
+                self._update(speaker, emb, seconds)
+        return speaker, sims
 
     def _update(self, idx, emb, seconds):
+        if self.centroids[idx] is None:
+            self.centroids[idx] = emb
+            self.weights[idx] = seconds
+            return
         w = self.weights[idx]
         merged = self.centroids[idx] * w + emb * seconds
         self.centroids[idx] = merged / (np.linalg.norm(merged) + 1e-9)
@@ -184,33 +205,40 @@ def read_wav(data):
 
 
 def parse_langs(raw):
-    """'zh-TW,en' → [('zh-TW', 'zh'), ('en', 'en')]：前端語言代碼對應 whisper 語言碼，去除重複。"""
-    out, seen = [], set()
-    for tag in (raw or "").split(","):
+    """'zh-TW,en' → [('zh-TW', 'zh'), ('en', 'en')]：依序為甲、乙方的前端語言代碼與 whisper 語言碼。"""
+    out = []
+    for tag in (raw or "").split(",")[:2]:
         tag = tag.strip()
-        code = tag.split("-")[0].lower()
-        if tag and code not in seen:
-            seen.add(code)
-            out.append((tag, code))
+        if tag:
+            out.append((tag, tag.split("-")[0].lower()))
     return out
 
 
 def transcribe(pcm, langs):
-    """回傳 (text, 前端語言代碼, 語言信心)。語言限定在 langs 內：偵測後取機率較高者，信心為其在候選語言中的占比。"""
-    language, tag, confidence = None, None, 1.0
+    """回傳 (text, 語言欄位 0/1 或 None, 語言信心)。
+
+    語言限定在 langs（甲/乙方語言）內：偵測後取機率較高者，信心為其在候選語言中的占比。
+    雙方語言碼相同（例如 zh-TW 與 zh-CN）時無法靠語言分辨，語言欄位為 None。
+    """
+    codes = list(dict.fromkeys(code for _, code in langs))
+    index, confidence = None, 1.0
     with _whisper_lock:
-        if len(langs) == 1:
-            tag, language = langs[0]
-        elif len(langs) > 1:
+        if len(codes) == 1:
+            language = codes[0]
+        elif len(codes) > 1:
             _, _, probs = _whisper.detect_language(pcm)
             scores = dict(probs)
-            tag, language = max(langs, key=lambda item: scores.get(item[1], 0.0))
-            total = sum(scores.get(code, 0.0) for _, code in langs)
+            language = max(codes, key=lambda c: scores.get(c, 0.0))
+            total = sum(scores.get(c, 0.0) for c in codes)
             confidence = scores.get(language, 0.0) / total if total > 0 else 0.5
+            index = next(i for i, (_, code) in enumerate(langs) if code == language)
+        else:
+            language = None
         prompt = None
         if language == "zh":
+            tag = next(t for t, code in langs if code == "zh")
             prompt = "以下是繁體中文的句子。" if tag == "zh-TW" else "以下是简体中文的句子。"
-        segments, info = _whisper.transcribe(
+        segments, _ = _whisper.transcribe(
             pcm,
             language=language,
             beam_size=1,
@@ -219,7 +247,7 @@ def transcribe(pcm, langs):
             initial_prompt=prompt,
         )
         kept = [s.text.strip() for s in segments if s.no_speech_prob < 0.6]
-    return " ".join(t for t in kept if t).strip(), tag or info.language, confidence
+    return " ".join(t for t in kept if t).strip(), index, confidence
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -266,21 +294,35 @@ class Handler(BaseHTTPRequestHandler):
                 enroll = (query.get("enroll") or ["1"])[0] != "0"
 
                 result = {"seconds": seconds, "speaker": None}
+                lang_party = None
                 if url.path == "/transcribe":
-                    text, language, confidence = transcribe(pcm, parse_langs((query.get("langs") or [""])[0]))
-                    result.update(text=text, language=language, language_confidence=confidence)
+                    langs = parse_langs((query.get("langs") or [""])[0])
+                    text, lang_index, confidence = transcribe(pcm, langs)
+                    result.update(text=text, language_party=lang_index, language_confidence=confidence)
                     if not text:
                         return self._send(200, result)
+                    if lang_index is not None and confidence >= LANG_CONFIDENT:
+                        lang_party = lang_index
 
-                if seconds < MIN_SECONDS:
-                    result["reason"] = "too_short"
-                    return self._send(200, result)
-                emb = embed(pcm)
+                # mode=language：語言夠有把握時直接以語言決定；mode=voice：以聲紋為主，語言只用來確認「某一方第一次出現」
+                mode = (query.get("mode") or ["voice"])[0]
+                prior = 1 if (query.get("prior") or ["a"])[0] == "b" else 0
+                session = get_session(sid)
+                label = None
+                if lang_party is not None:
+                    prior = lang_party
+                    # 語言有把握、且該方還沒有聲紋（第一次聽到他的語言）→ 可確定他在場，直接登錄，避免被誤併入另一人
+                    if mode == "language" or session.centroids[lang_party] is None:
+                        label = lang_party
+
+                emb = embed(pcm) if seconds >= MIN_SECONDS else None
                 if emb is None:
-                    result["reason"] = "too_short"
+                    # 音訊太短取不到聲紋：只能靠語言（若有把握）
+                    result.update(reason="too_short", speaker=lang_party, source="language" if lang_party is not None else None)
                     return self._send(200, result)
-                speaker, sims, created = get_session(sid).identify(emb, seconds, enroll)
-                result.update(speaker=speaker, similarities=sims, created=created)
+                speaker, sims = session.identify(emb, seconds, enroll, label, prior)
+                source = "language" if label is not None else "voice"
+                result.update(speaker=speaker, similarities=sims, source=source)
                 return self._send(200, result)
 
             self._send(404, {"error": "Not found"})
