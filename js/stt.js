@@ -1,7 +1,7 @@
-// 語音辨識：Web Speech API + 2 秒靜音自動結句
+// 語音辨識：Web Speech API + 1 秒靜音自動結句
 // callbacks: { onInterim(text), onSpeechStart(startMs), onUtterance(text, { startMs, endMs }), onError(code), onStateChange(listening) }
 
-const SILENCE_MS = 2000;
+const SILENCE_MS = 1000;
 
 class SpeechEngine {
   constructor() {
@@ -162,7 +162,7 @@ class SpeechEngine {
     }
   }
 
-  // 靜音 2 秒（或手動停止）→ 結束這一句，進入翻譯
+  // 靜音 1 秒（或手動停止）→ 結束這一句，進入翻譯
   _flush() {
     this._clearTimer();
     const text = (this.finalText + this.interimText).trim();

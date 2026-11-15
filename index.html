@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="zh-Hant">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -21,6 +22,7 @@
   }
   </script>
 </head>
+
 <body>
   <header class="app-header">
     <h1>🌐 雙向即時語音翻譯</h1>
@@ -88,7 +90,7 @@
       <button id="clear-transcript" class="btn btn-small btn-danger" type="button">清除對話</button>
     </div>
     <div id="transcript" class="transcript">
-      <p class="transcript-empty">尚無對話。按下「開始對話」後即可持續說話，停頓 2 秒會自動翻譯並播放，直到按下「停止對話」為止。</p>
+      <p class="transcript-empty">尚無對話。按下「開始對話」後即可持續說話，停頓 1 秒會自動翻譯並播放，直到按下「停止對話」為止。</p>
     </div>
   </section>
 
@@ -117,7 +119,8 @@
 
       <section class="settings-group">
         <h3>後端 Proxy（建議）</h3>
-        <p class="hint">在 GitHub Pages / 手機獨立使用時沒有後端：請關閉 Proxy 並直接填入 Azure 或 Google Key（DeepL 不支援瀏覽器直連，Edge 語音也需要 proxy；聲紋辨識在瀏覽器內執行，不需要 proxy）。</p>
+        <p class="hint">在 GitHub Pages / 手機獨立使用時沒有後端：請關閉 Proxy 並直接填入 Azure 或 Google Key（DeepL 不支援瀏覽器直連，Edge 語音也需要
+          proxy；聲紋辨識在瀏覽器內執行，不需要 proxy）。</p>
         <label class="inline-checkbox">
           <input type="checkbox" id="cfg-use-proxy" />
           啟用 Proxy 模式（避免 CORS 與前端外露 API Key）
@@ -183,15 +186,16 @@
   <script src="js/langs.js?v=20261111-16"></script>
   <script src="js/config.js?v=20261111-16"></script>
   <script src="js/translate.js?v=20261111-16"></script>
-  <script src="js/speaker.js?v=20261111-16"></script>
+  <script src="js/speaker.js?v=20261115-1"></script>
   <script src="js/stt.js?v=20261111-16"></script>
   <script src="js/piperplus.js?v=20261111-16"></script>
   <script src="js/tts.js?v=20261111-16"></script>
-  <script src="js/app.js?v=20261111-16"></script>
+  <script src="js/app.js?v=20261115-1"></script>
   <script>
     if ('serviceWorker' in navigator && window.isSecureContext) {
-      navigator.serviceWorker.register('sw.js').catch(() => {});
+      navigator.serviceWorker.register('sw.js').catch(() => { });
     }
   </script>
 </body>
+
 </html>

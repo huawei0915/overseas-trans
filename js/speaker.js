@@ -13,27 +13,57 @@ class SpeakerRecorder {
     this.source = null;
     this.chunks = []; // { endMs, rate, data: Float32Array }
     this.running = false;
+    this.starting = null;
+    this.lastVoiceMs = 0; // 最近一次錄到明顯人聲音量的時間（app.js 看門狗用）
   }
 
-  async start() {
+  start() {
+    this.starting ??= this._start().finally(() => { this.starting = null; });
+    return this.starting;
+  }
+
+  async _start() {
     if (this.running) return;
-    this.stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
-    });
-    const AC = window.AudioContext || window.webkitAudioContext;
-    this.ctx = new AC();
-    this.source = this.ctx.createMediaStreamSource(this.stream);
-    this.node = this.ctx.createScriptProcessor(4096, 1, 1);
-    this.node.onaudioprocess = (e) => {
-      const data = new Float32Array(e.inputBuffer.getChannelData(0));
-      const now = Date.now();
-      this.chunks.push({ endMs: now, rate: this.ctx.sampleRate, data });
-      const cutoff = now - SPEAKER_BUFFER_MS;
-      while (this.chunks.length && this.chunks[0].endMs < cutoff) this.chunks.shift();
-    };
-    this.source.connect(this.node);
-    this.node.connect(this.ctx.destination); // ScriptProcessor 需連到輸出才會觸發；輸出為靜音
-    this.running = true;
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+      });
+      const AC = window.AudioContext || window.webkitAudioContext;
+      this.ctx = new AC();
+      this.source = this.ctx.createMediaStreamSource(this.stream);
+      this.node = this.ctx.createScriptProcessor(4096, 1, 1);
+      this.node.onaudioprocess = (e) => {
+        const data = new Float32Array(e.inputBuffer.getChannelData(0));
+        const now = Date.now();
+        this.chunks.push({ endMs: now, rate: this.ctx.sampleRate, data });
+        const cutoff = now - SPEAKER_BUFFER_MS;
+        while (this.chunks.length && this.chunks[0].endMs < cutoff) this.chunks.shift();
+        let peak = 0;
+        for (let i = 0; i < data.length; i += 8) {
+          const a = data[i] < 0 ? -data[i] : data[i];
+          if (a > peak) peak = a;
+        }
+        if (peak > 0.02) this.lastVoiceMs = now;
+      };
+      this.source.connect(this.node);
+      this.node.connect(this.ctx.destination); // ScriptProcessor 需連到輸出才會觸發；輸出為靜音
+      this.running = true;
+      // 部分瀏覽器（Safari、行動版）的 AudioContext 需要在使用者手勢後 resume，
+      // 否則永遠停在 suspended、onaudioprocess 不會觸發，等於悄悄錄不到任何聲音
+      if (this.ctx.state === 'suspended') {
+        try { await this.ctx.resume(); } catch { /* 由下方的活檢接手 */ }
+      }
+      // 活檢：確認真的有音訊流進來，失敗就明確報錯而不是靜靜沒反應
+      await new Promise((resolve, reject) => {
+        setTimeout(() => {
+          if (!this.running || this.chunks.length) resolve();
+          else reject(new Error('麥克風錄音未啟動（音訊處理被瀏覽器暫停）'));
+        }, 800);
+      });
+    } catch (err) {
+      this.stop();
+      throw err;
+    }
   }
 
   stop() {
@@ -44,11 +74,13 @@ class SpeakerRecorder {
     this.ctx?.close().catch(() => {});
     this.node = this.source = this.stream = this.ctx = null;
     this.chunks = [];
+    this.lastVoiceMs = 0;
   }
 
   // 丟棄目前已錄的音訊（播放譯文期間錄到的喇叭聲不應拿去辨識）
   clear() {
     this.chunks = [];
+    this.lastVoiceMs = 0;
   }
 
   // 取 [startMs, endMs] 的音訊，轉成 16 kHz mono Float32；沒有音訊時回傳 null

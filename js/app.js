@@ -1,4 +1,4 @@
-// 主流程：STT → 靜音 2 秒 → 聲紋辨識甲/乙方（瀏覽器內 wespeaker）→ 容錯翻譯 → TTS 播放 → 對話紀錄
+// 主流程：STT → 靜音 1 秒 → 聲紋辨識甲/乙方（瀏覽器內 wespeaker）→ 容錯翻譯 → TTS 播放 → 對話紀錄
 (() => {
   const $ = (id) => document.getElementById(id);
 
@@ -75,8 +75,11 @@
     cfg.autoSpeakerChosen = true;
     AppConfig.save(cfg);
     if (sessionActive) {
-      if (cfg.autoSpeaker) void startSpeakerRecorder();
-      else recorder.stop();
+      if (cfg.autoSpeaker) void setupSpeaker();
+      else {
+        stopSpeakerWatchdog();
+        recorder.stop();
+      }
     }
     void checkSpeakerService();
   });
@@ -88,6 +91,7 @@
   });
 
   function disableSpeakerForSession(message) {
+    stopSpeakerWatchdog();
     recorder.stop();
     cfg.autoSpeaker = false;
     els.autoSpeaker.checked = false;
@@ -98,9 +102,53 @@
   async function startSpeakerRecorder() {
     try {
       await recorder.start();
-    } catch {
-      setSpeakerStatus('無法錄音進行聲紋辨識，已改用語言偵測', true);
+      if (recorder.running) startSpeakerWatchdog();
+    } catch (err) {
+      setSpeakerStatus(`無法錄音進行聲紋辨識（${err.message || err.name || '未知錯誤'}），已改用語言偵測`, true);
     }
+  }
+
+  // 聲紋辨識初始化：先開始錄音（快），再背景載入模型（首次約 26 MB），都不擋住語音辨識
+  async function setupSpeaker() {
+    await startSpeakerRecorder();
+    if (!recorder.running || !sessionActive || !cfg.autoSpeaker) return;
+    // 模型不可用時聲紋錄音留著也沒用，關掉以免白白佔用麥克風
+    if (!(await checkSpeakerService()) && recorder.running) {
+      stopSpeakerWatchdog();
+      recorder.stop();
+    }
+  }
+
+  // 部分裝置/瀏覽器的麥克風無法同時供語音辨識與聲紋錄音使用，且不一定回報錯誤：
+  // 聲紋錄音明明聽得到人聲，語音辨識卻一直收不到任何結果（畫面停在「聆聽中…」）。
+  // 看門狗持續比對兩邊的狀態，偵測到這種「靜默搶麥」就自動關閉聲紋、退回語言偵測。
+  let speakerWatchdog = null;
+  let speakerHijackSince = 0;
+
+  function startSpeakerWatchdog() {
+    stopSpeakerWatchdog();
+    speakerWatchdog = setInterval(() => {
+      if (!sessionActive || !recorder.running || stt.paused) { speakerHijackSince = 0; return; }
+      const now = Date.now();
+      const recorderHearsVoice = recorder.lastVoiceMs && now - recorder.lastVoiceMs < 800;
+      const sttHears = !!stt.startMs || (stt.lastMs && now - stt.lastMs < 1500);
+      if (recorderHearsVoice && !sttHears) {
+        speakerHijackSince ||= now;
+        if (now - speakerHijackSince >= 5000) {
+          disableSpeakerForSession('偵測到聲紋錄音與語音辨識無法共用麥克風，已關閉聲紋辨識、改用語言偵測');
+        }
+      } else {
+        speakerHijackSince = 0;
+      }
+    }, 1000);
+  }
+
+  function stopSpeakerWatchdog() {
+    if (speakerWatchdog) {
+      clearInterval(speakerWatchdog);
+      speakerWatchdog = null;
+    }
+    speakerHijackSince = 0;
   }
 
   // 第一位被辨識出的說話者歸給「當下選定的說話者」，第二位歸給另一方
@@ -243,7 +291,7 @@
   const isElectronHost = /Electron|Code-Insiders|Code\//i.test(navigator.userAgent);
   let isBrave = false;
   if (navigator.brave?.isBrave) {
-    navigator.brave.isBrave().then((v) => { isBrave = !!v; }).catch(() => {});
+    navigator.brave.isBrave().then((v) => { isBrave = !!v; }).catch(() => { });
   }
 
   function setMicWarning(message = '') {
@@ -281,7 +329,7 @@
     els.transcript.innerHTML = '';
     const p = document.createElement('p');
     p.className = 'transcript-empty';
-    p.textContent = '尚無對話。按下「開始對話」後即可持續說話，停頓 2 秒會自動翻譯並播放，直到按下「停止對話」為止。';
+    p.textContent = '尚無對話。按下「開始對話」後即可持續說話，停頓 1 秒會自動翻譯並播放，直到按下「停止對話」為止。';
     els.transcript.appendChild(p);
   }
 
@@ -507,13 +555,14 @@
     }
     sessionActive = true;
     updateMicUI();
-    if (cfg.autoSpeaker && (await checkSpeakerService())) await startSpeakerRecorder();
-    startRecognition();
+    startRecognition(); // 先啟動語音辨識，聲紋錄音與模型載入在背景進行，不讓說話被卡住
+    if (cfg.autoSpeaker) void setupSpeaker();
   }
 
   function stopSession() {
     sessionActive = false;
     clearTimeout(probeTimer);
+    stopSpeakerWatchdog();
     stt.stop(); // 會先把累積到一半的那一句翻譯完（需在關閉錄音前，才取得得到音訊）
     setTimeout(() => { if (!sessionActive) recorder.stop(); }, 3000);
     tts.stopAll();
